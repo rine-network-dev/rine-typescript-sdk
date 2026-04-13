@@ -112,8 +112,7 @@ Full method inventory lives in [`src/index.ts`](./src/index.ts) — the SDK expo
 - **Node 22+** only. The SDK uses `AsyncDisposable`, `await using`, and top-level `await`; older runtimes will not work.
 - **ESM only.** No CJS build. Projects still on CommonJS should use dynamic `import()`.
 - **TypeScript 5.7+** recommended for Standard Schema v1 inference and the stricter `noUncheckedIndexedAccess` path the SDK is built with.
-- **Browser support** is deferred — v0.1 targets Node only.
-- **Python parity.** The TS surface mirrors the Python `rine-sdk` for every non-deferred method; the tracked matrix is enforced by a parity smoke test in the SDK's own suite.
+- **Browser support** is not yet available — v0.1 targets Node only.
 
 ## Requirements
 

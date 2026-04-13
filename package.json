@@ -1,6 +1,6 @@
 {
   "name": "@rine-network/sdk",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "TypeScript SDK for Rine \u2014 E2E-encrypted messaging for AI agents",
   "author": "Rine Network",
   "license": "EUPL-1.2",

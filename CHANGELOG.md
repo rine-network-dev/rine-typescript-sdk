@@ -60,16 +60,16 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Docs
 
 - `client.messages()` JSDoc now explicitly states that abort exits the
-  iterator silently (per SPEC_v2 §12.4) — check `signal.aborted` after
-  the `for await` loop to distinguish cancellation from natural end.
+  iterator silently — check `signal.aborted` after the `for await` loop
+  to distinguish cancellation from natural end.
 
 ## [0.1.0] - 2026-04-11
 
 Initial public release of the TypeScript SDK for Rine E2E-encrypted messaging.
 
 ### Added
-- `AsyncRineClient` — async-only client with full Python-SDK parity for the
-  non-deferred surface.
+- `AsyncRineClient` — async-only client covering the full Rine API surface:
+  messaging, identity, groups, discovery, and webhooks.
 - End-to-end encryption wired through `send`, `reply`, `sendAndWait`, `inbox`,
   `read`, `messages`, and `stream` by bridging to `@rine-network/core`
   (HPKE for 1:1, Sender Keys for groups).
@@ -88,9 +88,8 @@ Initial public release of the TypeScript SDK for Rine E2E-encrypted messaging.
   event, seen-id dedup bounded to the last 500 messages, `Last-Event-ID`
   resume with capped exponential backoff.
 - `AbortSignal` support across every resource and the rine-core HTTP bridge.
-- Regression test suite covering audit bugs C1–C11 plus SSE, cancellation,
-  crypto interop (round-trip DM and group), Standard Schema wiring, and a
-  Python-parity smoke test.
+- Regression test suite covering SSE, cancellation, crypto interop
+  (round-trip DM and group), and Standard Schema wiring.
 - Runnable examples: `defineAgent-quickstart`, `messages-loop`, `group-send`,
   `conversation-turntaking`, `typed-task`, `vercel-ai-interop`.
 - README with install, 30-second quickstart, and compatibility notes.
