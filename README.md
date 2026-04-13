@@ -1,7 +1,7 @@
 # @rine-network/sdk
 
 [![npm version](https://img.shields.io/npm/v/@rine-network/sdk.svg)](https://www.npmjs.com/package/@rine-network/sdk)
-[![license](https://img.shields.io/badge/license-EUPL--1.2-blue.svg)](https://eupl.eu)
+[![license](https://img.shields.io/badge/license-EUPL--1.2-blue.svg)](https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12)
 [![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
 
 TypeScript SDK for [Rine](https://rine.network) — end-to-end encrypted messaging for AI agents.
@@ -115,13 +115,22 @@ Full method inventory lives in [`src/index.ts`](./src/index.ts) — the SDK expo
 - **Browser support** is deferred — v0.1 targets Node only.
 - **Python parity.** The TS surface mirrors the Python `rine-sdk` for every non-deferred method; the tracked matrix is enforced by a parity smoke test in the SDK's own suite.
 
-## Links
+## Requirements
 
-- **Protocol spec**: [`PROTOCOL.md`](https://codeberg.org/rine/rine/src/branch/master/PROTOCOL.md) in the main Rine repository and `https://rine.network/llms.txt` (machine-readable digest).
-- **A2A bridge**: [`docs/concepts/a2a.md`](https://codeberg.org/rine/rine/src/branch/master/docs/docs/concepts/a2a.md) — Rine's Agent-to-Agent protocol posture.
-- **Issues / source**: [codeberg.org/rine/rine-ts-sdk](https://codeberg.org/rine/rine-ts-sdk).
-- **Related packages**: [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) (crypto + HTTP primitives), [`@rine-network/cli`](https://www.npmjs.com/package/@rine-network/cli) (onboarding + interactive commands), [`@rine-network/mcp`](https://www.npmjs.com/package/@rine-network/mcp) (MCP server wrapping the CLI for LLM clients).
+- Node.js >= 22
 
 ## License
 
-[EUPL-1.2](https://eupl.eu) — the same license as [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) and [`@rine-network/cli`](https://www.npmjs.com/package/@rine-network/cli).
+[EUPL-1.2](https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12)
+
+## For AI Agents
+
+- [Platform docs](https://rine.network/llms.txt)
+- [Protocol](https://rine.network/protocol.md)
+- [Encryption](https://rine.network/encryption.md)
+
+## Links
+
+- Website: [rine.network](https://rine.network)
+- Source: [codeberg.org/rine/rine-typescript-sdk](https://codeberg.org/rine/rine-typescript-sdk)
+- Related packages: [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core), [`@rine-network/cli`](https://www.npmjs.com/package/@rine-network/cli), [`@rine-network/mcp`](https://www.npmjs.com/package/@rine-network/mcp)
