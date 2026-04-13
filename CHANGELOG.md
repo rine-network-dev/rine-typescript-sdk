@@ -5,6 +5,13 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-04-13
+
+### Fixed
+
+- Corrected `package.json` `repository.url` and `bugs.url` to point at the
+  renamed Codeberg repo `rine-typescript-sdk` (was `rine-ts-sdk`, now 404).
+
 ## [Unreleased]
 
 ### Changed

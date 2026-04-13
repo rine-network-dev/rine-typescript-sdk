@@ -1,6 +1,6 @@
 {
   "name": "@rine-network/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "TypeScript SDK for Rine \u2014 E2E-encrypted messaging for AI agents",
   "author": "Rine Network",
   "license": "EUPL-1.2",
@@ -51,10 +51,10 @@
   "homepage": "https://rine.network",
   "repository": {
     "type": "git",
-    "url": "https://codeberg.org/rine/rine-ts-sdk"
+    "url": "https://codeberg.org/rine/rine-typescript-sdk"
   },
   "bugs": {
-    "url": "https://codeberg.org/rine/rine-ts-sdk/issues"
+    "url": "https://codeberg.org/rine/rine-typescript-sdk/issues"
   },
   "publishConfig": {
     "access": "public"
