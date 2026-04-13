@@ -1,0 +1,42 @@
+{
+	"$schema": "https://typedoc.org/schema.json",
+	"entryPoints": [
+		"src/index.ts",
+		"src/resources/discovery.ts",
+		"src/resources/groups.ts",
+		"src/resources/identity.ts",
+		"src/resources/polling.ts",
+		"src/resources/streams.ts",
+		"src/resources/webhooks.ts",
+		"src/agent.ts",
+		"src/resources/conversation.ts"
+	],
+	"entryPointStrategy": "expand",
+	"intentionallyNotExported": [
+		"Brand",
+		"DefineAgentWithHandlers",
+		"DefineAgentWithOnMessage",
+		"Recipient",
+		"SDKHttpClient"
+	],
+	"out": "../docs/docs/ts/api",
+	"plugin": ["typedoc-plugin-markdown"],
+	"readme": "none",
+	"hideGenerator": true,
+	"excludePrivate": true,
+	"excludeInternal": true,
+	"excludeExternals": true,
+	"tsconfig": "tsconfig.json",
+	"entryFileName": "index.md",
+	"hidePageHeader": true,
+	"hideBreadcrumbs": true,
+	"useCodeBlocks": true,
+	"parametersFormat": "table",
+	"propertiesFormat": "table",
+	"enumMembersFormat": "table",
+	"typeDeclarationFormat": "table",
+	"indexFormat": "table",
+	"disableSources": false,
+	"gitRevision": "master",
+	"sourceLinkTemplate": "https://codeberg.org/rine/rine-ts-sdk/src/branch/{gitRevision}/{path}#L{line}"
+}
