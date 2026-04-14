@@ -1,5 +1,5 @@
 /**
- * Type-level parity companion — Python SDK method parity.
+ * Type-level API surface stability pins.
  *
  * Zero runtime code. `tsc` fails at build time if any committed method is
  * renamed or deleted on `AsyncRineClient`, `GroupsResource`, or
@@ -18,22 +18,22 @@ import type { GroupsResource } from "./resources/groups.js";
 import type { WebhooksResource } from "./resources/webhooks.js";
 
 // ---------------------------------------------------------------------------
-// Client surface — every non-deferred §3 method.
+// Client surface — pinned method names.
 // ---------------------------------------------------------------------------
 
-type _ClientParityKeys =
-	// Messaging — §3 "Messaging"
+type _ClientSurfaceKeys =
+	// Messaging
 	| "send"
 	| "inbox"
 	| "read"
 	| "reply"
 	| "sendAndWait"
 	| "stream"
-	// Discovery — §3 "Discovery"
+	// Discovery
 	| "discover"
 	| "inspect"
 	| "discoverGroups"
-	// Identity — §3 "Identity" (minus GDPR non-goals)
+	// Identity
 	| "whoami"
 	| "poll"
 	| "createAgent"
@@ -45,23 +45,23 @@ type _ClientParityKeys =
 	| "revokePollToken"
 	| "getQuotas"
 	| "rotateKeys"
-	// Agent cards — §3 "Agent Cards"
+	// Agent cards
 	| "setAgentCard"
 	| "getAgentCard"
 	| "deleteAgentCard"
-	// Org lifecycle — §3 "Org Management"
+	// Org lifecycle
 	| "updateOrg"
 	| "eraseOrg"
 	| "exportOrg"
-	// Lifecycle — §3 "Lifecycle"
+	// Lifecycle
 	| "withOptions"
 	| "close";
 
 // ---------------------------------------------------------------------------
-// Groups surface — every non-deferred §3 `client.groups.*` method.
+// Groups surface — pinned `client.groups.*` method names.
 // ---------------------------------------------------------------------------
 
-type _GroupsParityKeys =
+type _GroupsSurfaceKeys =
 	| "create"
 	| "join"
 	| "members"
@@ -74,10 +74,10 @@ type _GroupsParityKeys =
 	| "vote";
 
 // ---------------------------------------------------------------------------
-// Webhooks surface — every non-deferred §3 `client.webhooks.*` method.
+// Webhooks surface — pinned `client.webhooks.*` method names.
 // ---------------------------------------------------------------------------
 
-type _WebhooksParityKeys =
+type _WebhooksSurfaceKeys =
 	| "create"
 	| "list"
 	| "update"
@@ -91,16 +91,16 @@ type _WebhooksParityKeys =
 // build-time drift detector.
 // ---------------------------------------------------------------------------
 
-type _ClientPin = Pick<AsyncRineClient, _ClientParityKeys>;
-type _GroupsPin = Pick<GroupsResource, _GroupsParityKeys>;
-type _WebhooksPin = Pick<WebhooksResource, _WebhooksParityKeys>;
+type _ClientPin = Pick<AsyncRineClient, _ClientSurfaceKeys>;
+type _GroupsPin = Pick<GroupsResource, _GroupsSurfaceKeys>;
+type _WebhooksPin = Pick<WebhooksResource, _WebhooksSurfaceKeys>;
 
 /**
  * Public type-only export that forces tsc to evaluate all three pins.
  * Imported from `src/index.ts` via `export type` so the bundler strips
  * it entirely — there is no JavaScript emitted for this file.
  */
-export type ParityPins = {
+export type SurfacePins = {
 	readonly client: _ClientPin;
 	readonly groups: _GroupsPin;
 	readonly webhooks: _WebhooksPin;

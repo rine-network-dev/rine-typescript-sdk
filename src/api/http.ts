@@ -6,11 +6,11 @@
  * - Per-request timeout via AbortSignal.timeout()
  * - Typed error mapping via raiseForStatus()
  * - Agent header injection
- * - User middleware pipeline (SPEC §9.2–§9.6)
+ * - User middleware pipeline
  *
  * Middleware wraps `.get/.post/.put/.patch/.delete` only. It does NOT wrap
  * `openStream()` (SSE lifecycle) or `getCoreHttpClient()` (crypto-path —
- * those calls go through a separate rine-core HttpClient per §6.5).
+ * those calls go through a separate rine-core HttpClient).
  */
 
 import {
@@ -44,7 +44,7 @@ export interface SDKHttpClientOptions {
 	/** Max retries on 429. Default: 2. */
 	maxRetries?: number;
 	/**
-	 * User middleware chain — SPEC §9.2. Composed once at construction.
+	 * User middleware chain. Composed once at construction.
 	 * The first element is the outermost layer.
 	 */
 	middleware?: readonly RineMiddleware[];
@@ -95,7 +95,7 @@ export class SDKHttpClient {
 	 * compiled pipeline lives in `this.pipeline`.
 	 */
 	readonly middleware: readonly RineMiddleware[];
-	/** Composed middleware pipeline — SPEC §9.3. Bound once at construction. */
+	/** Composed middleware pipeline. Bound once at construction. */
 	private readonly pipeline: (ctx: RequestContext) => Promise<Response>;
 
 	get configDir(): string {
@@ -189,8 +189,7 @@ export class SDKHttpClient {
 	 * **Middleware scope**: `openStream` does NOT run the user middleware
 	 * pipeline. SSE lifecycle (long-lived, Last-Event-ID resume, reconnect)
 	 * is incompatible with the one-shot request/response middleware shape.
-	 * See SPEC §9.6 / §12.3.4 for the scope boundary and the `fetchWithAuth`
-	 * auth-injection path.
+	 * Auth injection still runs via the `fetchWithAuth` path.
 	 *
 	 * @param opts.signal - REQUIRED. A long-lived stream without a cancel
 	 *   signal leaks a connection forever, so the type enforces it. Fire-and-
@@ -229,7 +228,7 @@ export class SDKHttpClient {
 	 * side is visible to the other.
 	 *
 	 * Middleware scope: calls made through the returned client do NOT run
-	 * the SDK middleware pipeline (see SPEC §6.5).
+	 * the SDK middleware pipeline.
 	 */
 	getCoreHttpClient(opts: GetCoreHttpClientOptions = {}): CoreHttpClient {
 		const entry = loadCredentials(this._configDir).default;
@@ -412,7 +411,7 @@ export class SDKHttpClient {
 		};
 
 		// 429 → honor Retry-After, backoff capped at 30s, cap at `maxRetries`
-		// attempts (SPEC §9.4). The 401 refresh branch inside `doFetch` is
+		// attempts. The 401 refresh branch inside `doFetch` is
 		// independent of this loop: a refresh success returns directly and
 		// does not consume a retry slot, matching the "one transport, one
 		// logical call" principle that keeps middleware simple.
@@ -451,7 +450,6 @@ function buildUrl(
 	params?: Record<string, string | number | boolean | undefined>,
 ): string {
 	// Absolute URLs (e.g. poll_url from credentials) bypass base URL prepend.
-	// Matches Python SDK: `url = path if path.startswith("http") else ...`
 	let url =
 		path.startsWith("http://") || path.startsWith("https://")
 			? path
@@ -511,8 +509,8 @@ async function parseErrorDetail(res: Response): Promise<string> {
 }
 
 /**
- * Parse the `Retry-After` response header and pick a delay, capped at 30s
- * (SPEC §9.4). Supports both numeric "seconds" and RFC 7231 HTTP-date forms;
+ * Parse the `Retry-After` response header and pick a delay, capped at 30s.
+ * Supports both numeric "seconds" and RFC 7231 HTTP-date forms;
  * falls back to exponential backoff (1s, 2s, 4s, ...) keyed on the attempt
  * counter when the server omits or emits an unparseable value.
  */

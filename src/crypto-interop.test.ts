@@ -200,7 +200,7 @@ afterEach(() => {
 });
 
 // ---------------------------------------------------------------------------
-// DM round-trip — case (1)+(2) of SPEC §16.3.
+// DM round-trip.
 // ---------------------------------------------------------------------------
 
 describe("crypto interop — DM round-trip", () => {
@@ -266,7 +266,7 @@ describe("crypto interop — DM round-trip", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Group round-trip — case (3)+(4) of SPEC §16.3.
+// Group round-trip.
 // ---------------------------------------------------------------------------
 
 describe("crypto interop — group round-trip", () => {
@@ -435,7 +435,7 @@ describe("crypto interop — verification status matrix", () => {
 		// Group sig-failure maps to `invalid` (not `unverifiable`) per the
 		// `classifyGroupError` branch in `decrypt.ts` — callers can
 		// distinguish "bad sender" from "missing key material" on the group
-		// path, closing the semantic gap Step 22's adherence audit flagged.
+		// path.
 		expect(result.verification_status).toBe("invalid");
 	});
 

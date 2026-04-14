@@ -1,9 +1,8 @@
 /**
  * Webhooks resource — create, list, update, delete, deliveries.
  *
- * Step 10 — Track B: `create()` now takes the required `agentId` + optional
- * `events` list per server schema; `update()` accepts only the `active`
- * toggle (matches Python SDK). SPEC §10.7.
+ * `create()` takes the required `agentId` + optional `events` list per the
+ * server schema; `update()` accepts only the `active` toggle.
  */
 
 import { parse, parseCursorPage } from "../api/adapters.js";
@@ -27,8 +26,7 @@ export class WebhooksResource {
 	 * Register a webhook.
 	 *
 	 * Route: `POST /webhooks` with body `{agent_id, url, events?}`.
-	 * `agent_id` is required by the server schema — previous TS SDK
-	 * omitted it entirely, which 422'd every call.
+	 * `agent_id` is required by the server schema.
 	 */
 	async create(
 		agentId: AgentUuid,
@@ -66,8 +64,7 @@ export class WebhooksResource {
 	/**
 	 * Toggle a webhook's active flag.
 	 *
-	 * Body restricted to `{active}` per server schema — the previous TS
-	 * SDK accepted `Partial<WebhookRead>` which did not match the server.
+	 * Body restricted to `{active}` per server schema.
 	 */
 	async update(
 		id: WebhookUuid,
@@ -109,8 +106,7 @@ export class WebhooksResource {
 	/**
 	 * Aggregated delivery counts for a webhook.
 	 *
-	 * Route: `GET /webhooks/{id}/deliveries/summary`. Matches Python SDK
-	 * `webhooks.delivery_summary` (SPEC §10.7).
+	 * Route: `GET /webhooks/{id}/deliveries/summary`.
 	 */
 	async deliverySummary(id: WebhookUuid, opts: { signal?: AbortSignal } = {}) {
 		const raw = await this.http.get<unknown>(

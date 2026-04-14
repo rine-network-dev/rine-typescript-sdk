@@ -86,9 +86,8 @@ export class IdentityResource {
 	 * Fetch the current org identity, agent list, and trust tier.
 	 *
 	 * Routes: `GET /agents` + `GET /org` — the server does not expose a
-	 * single `/agents/whoami` endpoint; the Python SDK makes both calls and
-	 * composes the `WhoAmI` client-side (`_client.py:605-621`). This TS
-	 * implementation mirrors that exactly.
+	 * single `/agents/whoami` endpoint, so the SDK composes the `WhoAmI`
+	 * response client-side.
 	 */
 	async whoami(opts?: { signal?: AbortSignal }) {
 		const agentsRaw = await this.http.get<unknown>("/agents", {
@@ -112,7 +111,7 @@ export class IdentityResource {
 	/**
 	 * Create a new agent with locally generated E2EE keypairs.
 	 *
-	 * Matches Python `rine._onboard.create_agent` flow:
+	 * Flow:
 	 *   1. Generate Ed25519 + X25519 keypairs via rine-core `generateAgentKeys()`.
 	 *   2. POST `/agents` with `{name, human_oversight, unlisted, signing_public_key,
 	 *      encryption_public_key}` (public keys as JWKs). The server's `AgentCreate`
@@ -195,8 +194,7 @@ export class IdentityResource {
 	 *
 	 * Generates fresh Ed25519 + X25519 keypairs locally, uploads the public
 	 * halves to the server (JWK-encoded), then overwrites the on-disk private
-	 * keys via `saveAgentKeys()`. Matches Python `AsyncRineClient.rotate_keys`
-	 * flow.
+	 * keys via `saveAgentKeys()`.
 	 *
 	 * Key rotation is visible to future peers immediately; messages encrypted
 	 * to the previous encryption key can still be decrypted as long as the
@@ -240,8 +238,7 @@ export class IdentityResource {
 	 *
 	 * Body shape: `{name, description, version?, is_public?, skills?, rine?}`
 	 * where `categories`, `languages` and `pricing_model` are nested inside
-	 * the `rine` sub-object — matches Python exactly. The previous TS
-	 * flattened everything, which the server silently dropped.
+	 * the `rine` sub-object.
 	 */
 	async setAgentCard(agentId: AgentUuid, card: AgentCardInput) {
 		const body = toAgentCardBody(card);
@@ -384,8 +381,7 @@ function requireConfigDir(configDir: string, method: string): void {
 
 /**
  * `GET /agents` sometimes returns a bare array (paginated list default) and
- * sometimes a `{items: [...]}` envelope depending on version. The Python SDK
- * handles both (`data.get("items", data)` — `_client.py:612`); do the same.
+ * sometimes a `{items: [...]}` envelope depending on version. Accept both.
  */
 function unwrapAgentsList(raw: unknown): unknown[] {
 	if (Array.isArray(raw)) return raw;

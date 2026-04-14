@@ -277,7 +277,7 @@ describe("inbox() — per-envelope decryption", () => {
 		expect(getCalls).toHaveLength(1);
 		expect(getCalls[0]?.path).toBe(`/agents/${SENDER_UUID}/messages`);
 
-		// One decrypt call per item — the original audit bug was zero.
+		// One decrypt call per item.
 		expect(decryptMod.decryptEnvelope).toHaveBeenCalledTimes(items.length);
 		// Each call must receive the matching envelope, not the same item
 		// repeated or the items out of order.
@@ -599,8 +599,7 @@ describe("createAgent() — local keypair generation", () => {
 
 		const postCall = calls.find((c) => c.method === "POST");
 		const body = postCall?.body as Record<string, unknown>;
-		// Both JWKs posted — audit bug shipped nothing because createAgent
-		// never generated keys.
+		// Both JWKs posted — `createAgent` must generate and include them.
 		const sigJwk = body.signing_public_key as Record<string, unknown>;
 		const encJwk = body.encryption_public_key as Record<string, unknown>;
 		expect(sigJwk.crv).toBe("Ed25519");
@@ -621,7 +620,7 @@ describe("createAgent() — local keypair generation", () => {
 });
 
 // ===========================================================================
-// C7 — rotateKeys route + body (smoke; full coverage in identity.test.ts)
+// rotateKeys route + body (smoke; full coverage in identity.test.ts)
 // ===========================================================================
 
 describe("rotateKeys() — route and body", () => {
@@ -658,7 +657,6 @@ describe("rotateKeys() — route and body", () => {
 		await identity.rotateKeys(AGENT_ID_7);
 
 		const postCall = calls.find((c) => c.method === "POST");
-		// The audit bug used `POST /agents/{id}/rotate-keys` with an empty body.
 		expect(postCall?.path).toBe(`/agents/${AGENT_ID_7}/keys`);
 		const body = postCall?.body as Record<string, unknown>;
 		expect(body).toHaveProperty("signing_public_key");
@@ -667,7 +665,7 @@ describe("rotateKeys() — route and body", () => {
 });
 
 // ===========================================================================
-// C8 — regeneratePollToken route
+// regeneratePollToken route
 // ===========================================================================
 
 describe("regeneratePollToken() — correct route", () => {
@@ -685,8 +683,8 @@ describe("regeneratePollToken() — correct route", () => {
 
 		const postCall = calls.find((c) => c.method === "POST");
 		expect(postCall?.path).toBe(`/agents/${AGENT_ID_7}/poll-token`);
-		// The audit bug appended `/regenerate` — ensure that suffix never
-		// reappears.
+		// Ensure no `/regenerate` suffix is appended — the route is just
+		// `/agents/{id}/poll-token`.
 		expect(postCall?.path).not.toContain("/regenerate");
 		// No request body — the server derives the new token server-side.
 		expect(postCall?.body).toBeUndefined();
@@ -738,8 +736,8 @@ describe("setAgentCard() — rine field nesting", () => {
 		expect(body.is_public).toBe(true);
 		expect(Array.isArray(body.skills)).toBe(true);
 
-		// rine-specific fields MUST be nested — the audit bug flattened them,
-		// causing the server to silently drop the values.
+		// rine-specific fields MUST be nested under `rine` — flattening them
+		// would cause the server to silently drop the values.
 		const rine = body.rine as Record<string, unknown>;
 		expect(rine).toBeDefined();
 		expect(rine.categories).toEqual(["productivity"]);

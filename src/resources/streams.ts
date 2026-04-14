@@ -30,7 +30,7 @@ export interface StreamOptions {
 	 * Resume token for server-side replay. Sent as the initial
 	 * `Last-Event-ID` request header; the server replays events after this
 	 * id, then continues live. Updated automatically as live events arrive,
-	 * so the SPEC §12.4 reconnect loop uses the most recent seen id on
+	 * so the reconnect loop uses the most recent seen id on
 	 * subsequent reconnects regardless of what the caller passed.
 	 */
 	lastEventId?: string;
@@ -46,7 +46,7 @@ export class StreamsResource {
 	/**
 	 * Open an SSE stream yielding RineEvents.
 	 *
-	 * For agentic use cases, prefer `client.messages()` (SPEC §11.1) which
+	 * For agentic use cases, prefer `client.messages()` which
 	 * wraps this with local decryption and cleartext type filtering — this
 	 * method is the lower-level raw-event primitive.
 	 *
@@ -85,7 +85,7 @@ export class StreamsResource {
 	): AsyncGenerator<RineEvent> {
 		let lastEventId: string | undefined = initialLastEventId;
 		let backoff = 1; // seconds
-		// Bounded FIFO seen-ID set (SPEC_v2 §12.3.3). On reconnect with
+		// Bounded FIFO seen-ID set. On reconnect with
 		// Last-Event-ID, the server's catch-up query can race with NOTIFY
 		// delivery and re-emit events — this is the guard against dispatching
 		// them twice within the 500-id window.

@@ -34,7 +34,7 @@ export type {
 } from "./client.js";
 
 // ---------------------------------------------------------------------------
-// Agentic layer — §11.2 / §11.3
+// Agentic layer
 // ---------------------------------------------------------------------------
 
 export { defineAgent } from "./agent.js";
@@ -71,7 +71,7 @@ export type {
 } from "./resources/conversation.js";
 
 // ---------------------------------------------------------------------------
-// Middleware — §9.2–§9.6
+// Middleware
 // ---------------------------------------------------------------------------
 
 export type {
@@ -86,7 +86,7 @@ export {
 } from "./api/middleware.js";
 
 // ---------------------------------------------------------------------------
-// Standard Schema v1 integration — §7.4 / §11.4
+// Standard Schema v1 integration
 // ---------------------------------------------------------------------------
 
 export type { StandardSchemaV1 } from "@standard-schema/spec";
@@ -213,7 +213,7 @@ export { CursorPage } from "./utils/cursor-page.js";
 export { timeoutSignal, anySignal } from "./utils/abort.js";
 export { toAsyncIter } from "./utils/sse.js";
 
-// Type-level parity companion — evaluated at build time via tsc but not
-// part of the public API surface. The unused import forces tsc to type-check
-// the pins inside `_parity.ts`, catching method drift at build time.
-import type { ParityPins as _ParityPins } from "./_parity.js";
+// Type-level API surface stability pins — evaluated at build time via tsc but
+// not part of the public API surface. The unused import forces tsc to
+// type-check the pins inside `_parity.ts`, catching method drift at build time.
+import type { SurfacePins as _SurfacePins } from "./_parity.js";

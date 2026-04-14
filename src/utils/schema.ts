@@ -1,10 +1,10 @@
 /**
- * Standard Schema v1 integration helpers — SPEC §7.4 / §11.4.
+ * Standard Schema v1 integration helpers.
  *
  * The SDK accepts user-supplied schemas on `send<T>`, `read<T>`, `reply<T>`,
  * `messages<T>`, `sendAndWait<Req, Rep>`, `conversation(id).{send,reply,messages,history}<T>`,
  * and `defineAgent<T>`. `@standard-schema/spec` is a type-only package — no
- * validator runtime ships with the SDK (D3). Users bring Zod, Valibot, ArkType,
+ * validator runtime ships with the SDK. Users bring Zod, Valibot, ArkType,
  * Effect Schema, or any other compliant library and pass a schema object via
  * the `schema` option slot.
  *
@@ -91,8 +91,8 @@ export async function parseMessagePlaintext<T>(
 
 /**
  * Validate an outbound payload against a Standard Schema v1 before it is
- * handed to the encryption layer. SPEC §11.4: outbound schemas run *before*
- * encrypt so a shape failure rejects without sending any ciphertext.
+ * handed to the encryption layer. Outbound schemas run *before* encrypt so
+ * a shape failure rejects without sending any ciphertext.
  *
  * This helper returns the validated (possibly transformed — schemas may
  * parse / coerce) value so the caller can encrypt the narrowed form rather

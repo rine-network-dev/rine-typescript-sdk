@@ -4,8 +4,7 @@
  * Provides:
  * - `timeoutSignal(ms)` — `{ signal, clear }` pair that aborts after ms ms
  *   with an `RineTimeoutError` reason. Callers MUST call `clear()` in a
- *   `finally` block so the timer is cancelled on early completion
- *   (audit MINOR-4, SPEC_v2 §14.3).
+ *   `finally` block so the timer is cancelled on early completion.
  * - `anySignal(...signals)` — signal that aborts when ANY of the inputs abort
  */
 
@@ -21,7 +20,7 @@ import { RineTimeoutError } from "../errors.js";
  *
  * When the timer fires, the signal is aborted with an `RineTimeoutError`
  * reason so `catch` sites can distinguish an SDK timeout from a user-cancel
- * via `err instanceof RineTimeoutError` (SPEC_v2 §14.4).
+ * via `err instanceof RineTimeoutError`.
  */
 export function timeoutSignal(ms: number): {
 	signal: AbortSignal;
@@ -45,7 +44,7 @@ export function timeoutSignal(ms: number): {
  * first — this preserves the `RineTimeoutError` reason attached by
  * `timeoutSignal()` (and matching per-op timers in resources), so downstream
  * `signal.reason instanceof RineTimeoutError` checks classify timeouts
- * correctly instead of seeing a generic `AbortError` (SPEC_v2 §14.4).
+ * correctly instead of seeing a generic `AbortError`.
  *
  * Listeners are detached from the remaining inputs as soon as the combined
  * signal fires — this prevents retaining long-lived source signals (e.g. a

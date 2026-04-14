@@ -551,10 +551,9 @@ describe("defineAgent()", () => {
 	});
 
 	it("stop() before start() is a no-op and poisons subsequent start()", async () => {
-		// Guards RISK-2 from the Step 17 robustness audit. A stop-before-
-		// start should abort the internal controller cleanly, and a later
-		// start() should NOT kick off a stream against an already-aborted
-		// signal. The agent is single-shot.
+		// A stop-before-start should abort the internal controller cleanly,
+		// and a later start() should NOT kick off a stream against an
+		// already-aborted signal. The agent is single-shot.
 		const { client, messagesCalls } = makeStubClient();
 		const agent = defineAgentT({ client, onMessage: vi.fn() });
 
@@ -580,9 +579,8 @@ describe("defineAgent()", () => {
 	});
 
 	it("logs the handler error message via console.error when onError absent", async () => {
-		// Tightens GAP-6 from the Step 17 robustness audit — assert the
-		// full substring shape of the default-log path (id, type, error name
-		// + message) rather than just /handler error/.
+		// Assert the full substring shape of the default-log path (id, type,
+		// error name + message) rather than just /handler error/.
 		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 		const { client, push, end } = makeStubClient();
 		const agent = defineAgentT({

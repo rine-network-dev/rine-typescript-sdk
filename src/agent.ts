@@ -32,7 +32,7 @@ type ReplyResult = Awaited<ReturnType<AsyncRineClient["reply"]>>;
  * non-reserved, schema-passing message. A throw is caught and routed to
  * `onError({ stage: 'handler' })` — the agent keeps running. When
  * `defineAgent<T>({ schema })` is used, `msg.plaintext` is narrowed to
- * `T | null` per SPEC §7.4 / §11.4.
+ * `T | null`.
  */
 export type AgentHandler<T = unknown> = (
 	msg: DecryptedMessage<T>,
@@ -44,7 +44,7 @@ export interface AgentMessageContext {
 	client: AsyncRineClient;
 	/**
 	 * Pre-bound conversation scope — shortcut for
-	 * `client.conversation(msg.conversation_id)` (SPEC §11.2 / §11.3).
+	 * `client.conversation(msg.conversation_id)`.
 	 * Use for turn-taking inside the same conversation without manually
 	 * threading `conversation_id` through every call.
 	 */
@@ -64,12 +64,12 @@ export interface AgentErrorContext {
 	/**
 	 * Stage at which the error occurred.
 	 *
-	 * Note: `"decrypt"` is deliberately absent from this union — §11.3.2
-	 * specifies that decryption failures surface on `msg.decrypt_error`
-	 * and still reach the handler, so they never route to `onError`.
-	 * `"schema"` fires when the `defineAgent<T>({ schema })` validation
-	 * step rejects a decrypted plaintext (SPEC §11.4 / §11.3.2) — the
-	 * message is skipped and the loop keeps running.
+	 * Note: `"decrypt"` is deliberately absent from this union —
+	 * decryption failures surface on `msg.decrypt_error` and still reach
+	 * the handler, so they never route to `onError`. `"schema"` fires
+	 * when the `defineAgent<T>({ schema })` validation step rejects a
+	 * decrypted plaintext — the message is skipped and the loop keeps
+	 * running.
 	 */
 	stage: "schema" | "handler" | "lifecycle";
 }
@@ -89,18 +89,16 @@ interface DefineAgentCommon<T = unknown> {
 	autoStart?: boolean;
 	/**
 	 * Standard Schema v1 — validates `msg.plaintext` for every delivered
-	 * message before the handler runs (SPEC §11.4). A failure routes to
+	 * message before the handler runs. A failure routes to
 	 * `onError({ stage: 'schema' })` and the message is skipped; the loop
 	 * keeps running. `msg.plaintext` is narrowed to `T | null` inside
 	 * handlers when a schema is supplied.
 	 */
 	schema?: StandardSchemaV1<unknown, T>;
 	/**
-	 * Opt-in polling mode. NOT yet implemented in Step 17 — setting this
-	 * throws at construction time. The `pollInterval` path is SPEC §11.3.4
-	 * and is deferred until the poll/inbox ergonomics settle (§11.3.5
-	 * explicitly rejects silent SSE→polling fallback, so we'd rather ship
-	 * nothing than ship the wrong semantics).
+	 * Opt-in polling mode. Not currently supported — setting this throws
+	 * at construction time. Silent SSE→polling fallback is intentionally
+	 * rejected to avoid surprising delivery semantics.
 	 */
 	pollInterval?: number;
 	/** Called for every uncaught error — schema, handler, or lifecycle. */
@@ -146,8 +144,8 @@ export interface RineAgent {
 
 /**
  * Grace period after `stop()` before in-flight handlers are logged as
- * still-running. SPEC §11.3.3 — we don't forcibly terminate user promises
- * (Node has no mechanism), we just wait and then log.
+ * still-running. We don't forcibly terminate user promises (Node has no
+ * mechanism), we just wait and then log.
  */
 const STOP_GRACE_MS = 30_000;
 
@@ -191,7 +189,7 @@ export function defineAgent<T = unknown>(
 		? opts.onMessage
 		: undefined;
 
-	// Pre-decrypt type filter optimization (SPEC §11.3.1). Type-routed
+	// Pre-decrypt type filter optimization. Type-routed
 	// agents without a catch-all pass `Object.keys(handlers)` down to
 	// `client.messages({ type })` so the SSE layer filters on the
 	// cleartext `type` field before we spend a decrypt call on it.
@@ -231,7 +229,7 @@ export function defineAgent<T = unknown>(
 		try {
 			await onError(err, ctx);
 		} catch (innerErr) {
-			// SPEC §11.3.2: a throw inside onError is caught and logged once,
+			// A throw inside onError is caught and logged once,
 			// the agent keeps running.
 			const reason =
 				innerErr instanceof Error ? innerErr.message : String(innerErr);
@@ -243,8 +241,7 @@ export function defineAgent<T = unknown>(
 		// Schema validation runs first. A failure routes to `onError` with
 		// `stage: 'schema'` and the message is skipped — the handler is not
 		// invoked. Decrypt-failed envelopes bypass the schema check so the
-		// handler still sees them and can branch on `decrypt_error`. SPEC
-		// §11.3.2 / §11.4.
+		// handler still sees them and can branch on `decrypt_error`.
 		let typed: DecryptedMessage<T>;
 		if (schema !== undefined && msg.decrypt_error == null) {
 			try {
@@ -275,7 +272,7 @@ export function defineAgent<T = unknown>(
 		} else if (onMessage) {
 			handler = onMessage;
 		}
-		if (!handler) return; // silent drop — SPEC §11.3.1 dispatch rule 3
+		if (!handler) return; // silent drop — no handler registered
 
 		try {
 			await handler(typed, ctx);

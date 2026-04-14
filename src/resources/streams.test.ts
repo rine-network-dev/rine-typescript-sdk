@@ -278,11 +278,9 @@ describe("StreamsResource", () => {
 		// point is visible. The cap behaviour (Invariant 1) survives
 		// independently above.
 		expect(seconds).toEqual([2, 4, 8, 16, 30, 30, 30, 30]);
-		// The spec prose says "1s → 2s → 4s → 8s → 16s → 30s" but the
+		// The ideal sequence is "1s → 2s → 4s → 8s → 16s → 30s" but the
 		// current `connect()` doubles *before* emitting the heartbeat, so
 		// the first user-visible value is 2s (from 1s doubled), not 1s.
-		// The doubling-before-emit choice is a minor SPEC prose drift
-		// tracked in AUDIT_step23_adherence.md DEV-1.
 	});
 
 	it("resumes with the current Last-Event-ID after multiple reconnects", async () => {

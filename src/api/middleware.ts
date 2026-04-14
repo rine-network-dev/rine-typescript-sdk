@@ -1,5 +1,5 @@
 /**
- * Middleware pipeline for `SDKHttpClient` — SPEC §9.2–§9.6.
+ * Middleware pipeline for `SDKHttpClient`.
  *
  * Functional chain: `(ctx, next) => Promise<Response>`. One symmetric signature
  * covers logging, retry, rate-limiting, telemetry. No split onRequest/onResponse
@@ -8,15 +8,15 @@
  * **Scope boundary.** Middleware wraps `SDKHttpClient.{get,post,put,patch,delete}()`.
  * It does NOT wrap `openStream()` (SSE lifecycle is incompatible with one-shot
  * request/response) or `getCoreHttpClient()` (crypto-path calls go through a
- * separate rine-core HttpClient — see SPEC §6.5).
+ * separate rine-core HttpClient).
  *
  * **Retry placement.** User middleware sits *outside* the core 401 refresh +
  * 429 retry loop. Middleware sees one logical call per `.get()/.post()/...`,
- * not per retry attempt (Dec-3.1).
+ * not per retry attempt.
  */
 
 // ---------------------------------------------------------------------------
-// RineOperation — stable low-cardinality telemetry labels (SPEC §10.10)
+// RineOperation — stable low-cardinality telemetry labels
 // ---------------------------------------------------------------------------
 
 /**
@@ -162,7 +162,7 @@ export function composeMiddleware(
 }
 
 // ---------------------------------------------------------------------------
-// loggingMiddleware — the one built-in (SPEC §9.5)
+// loggingMiddleware — the one built-in
 // ---------------------------------------------------------------------------
 
 export interface LoggingMiddlewareOptions {

@@ -1,11 +1,10 @@
 /**
- * `ConversationScope` — SPEC §11.2.
+ * `ConversationScope`.
  *
  * A lightweight builder returned by `client.conversation(convId)` that
  * auto-scopes `send`, `reply`, `messages`, and `history` to a single
- * `conversation_id`. This is explicitly NOT the deferred "conversation
- * management API" (SPEC §10.13) — no `metadata()` / `status()` /
- * `participants()` methods in v0.1.
+ * `conversation_id`. No `metadata()` / `status()` / `participants()`
+ * methods are currently exposed on the scope.
  *
  * Design notes:
  *
@@ -28,12 +27,12 @@
  *
  * - `history()` walks `client.inbox({ cursor, limit })` pages and drops
  *   items whose `conversation_id` does not match. Also a v0.1 trade
- *   (SPEC §11.2.2) — same migration story as `messages()`.
+ *   — same migration story as `messages()`.
  *
- * Typed generics (`send<T>`, `messages<T>({ schema })`, etc.) landed in
- * Step 19. The four methods thread a `<T = unknown>` generic and a
- * `schema?: StandardSchemaV1<unknown, T>` slot so one schema written once
- * narrows an entire conversation's payload type end-to-end.
+ * Typed generics (`send<T>`, `messages<T>({ schema })`, etc.) thread a
+ * `<T = unknown>` generic and a `schema?: StandardSchemaV1<unknown, T>`
+ * slot so one schema written once narrows an entire conversation's
+ * payload type end-to-end.
  */
 
 import type { StandardSchemaV1 } from "@standard-schema/spec";
@@ -234,10 +233,8 @@ export class ConversationScope {
 		}
 	}
 
-	// Manual page walk (rather than `CursorPage.autoPaginate`) because we
-	// need per-item `conversation_id` filtering and an optional `maxItems`
-	// hard cap. `autoPaginate()` is also scheduled for deletion per
-	// SPEC §13.3, so open-coding the loop is the forward-compatible path.
+	// Manual page walk because we need per-item `conversation_id` filtering
+	// and an optional `maxItems` hard cap.
 	private async *historyGenerator<T>(
 		opts: ConversationHistoryOptions<T>,
 	): AsyncGenerator<DecryptedMessage<T>> {
@@ -257,7 +254,7 @@ export class ConversationScope {
 
 			for (const msg of page.items) {
 				if (msg.conversation_id !== this.id) continue;
-				// SPEC §11.4: schema narrows plaintext after decrypt. A
+				// Schema narrows plaintext after decrypt. A
 				// decrypt-failed envelope is yielded untouched so callers
 				// can branch on `decrypt_error`; a successful decrypt that
 				// fails validation throws `ValidationError` from the

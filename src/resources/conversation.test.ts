@@ -512,7 +512,7 @@ describe("ConversationScope.history", () => {
 // defineAgent integration — ctx.conversation pre-bind
 // ---------------------------------------------------------------------------
 
-describe("defineAgent ctx.conversation — SPEC §11.3", () => {
+describe("defineAgent ctx.conversation", () => {
 	it("exposes a ConversationScope pre-bound to the incoming message's conversation_id", async () => {
 		const { defineAgent } = await import("../agent.js");
 		const client = new AsyncRineClient({});

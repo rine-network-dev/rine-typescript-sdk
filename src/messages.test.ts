@@ -210,7 +210,7 @@ describe("client.messages()", () => {
 
 		expect(out.map(labelOf)).toEqual(["m1", "m3"]);
 		// Filtered-out event never went through decryptEnvelope — pre-decrypt
-		// cost savings from §11.1.2 / D6c.
+		// cost savings.
 		expect(mockedDecryptEnvelope).toHaveBeenCalledTimes(2);
 		const decryptedLabels = mockedDecryptEnvelope.mock.calls.map(
 			// biome-ignore lint/suspicious/noExplicitAny: narrow mock call arg

@@ -1,13 +1,12 @@
 /**
  * Shared decryption helper used by `messages.inbox()`, `messages.read()`,
- * `messages.sendAndWait()` (Phase 2), and `client.messages()` (§11.1).
+ * `messages.sendAndWait()`, and `client.messages()`.
  *
  * Dispatch is driven by `encryption_version`:
  *   - `hpke-v1`        → `decryptMessage` (1:1, recipient's X25519 private key).
  *   - `sender-key-v1`  → `decryptGroupMessage`. On a sender-key dispatch failure,
  *                        optionally retries once after calling
- *                        `fetchAndIngestPendingSKDistributions` (matches Python
- *                        SDK `read()` discipline).
+ *                        `fetchAndIngestPendingSKDistributions`.
  *   - anything else    → returned as-is with `decrypt_error` populated.
  *
  * Crypto failures (including the post-retry failure on the sender-key path)
@@ -121,11 +120,9 @@ export async function decryptEnvelope(
 			}
 		}
 
-		// Python SDK leaves the message untouched on unknown encryption_version
-		// (`_decrypt_message` returns the msg as-is); the TS SDK instead
-		// surfaces an explicit `decrypt_error` so callers get an observable
-		// signal rather than a silently-undecrypted envelope. Deliberate
-		// divergence, not an accidental parity gap.
+		// Unknown `encryption_version` surfaces an explicit `decrypt_error`
+		// so callers get an observable signal rather than a silently-
+		// undecrypted envelope.
 		return applyDecryptError(
 			msg,
 			`unknown encryption_version: ${msg.encryption_version}`,
@@ -163,7 +160,7 @@ function applyDecryptResult(
  * Failure is silent on purpose — if the bytes claim to be JSON but are
  * malformed, the decrypt layer succeeded and we hand back the raw string
  * rather than synthesising a `decrypt_error`. Crypto observability and
- * content-format observability are different concerns (SPEC §10.2).
+ * content-format observability are different concerns.
  */
 function autoParsePlaintext(
 	contentType: string | null | undefined,
@@ -207,8 +204,7 @@ function applyDecryptError(
  *
  * Without this classification every group failure collapses to
  * `unverifiable` and callers lose the ability to distinguish "bad sender"
- * from "missing key material" — the same gap the adherence audit for
- * Step 22 flagged as a blocker.
+ * from "missing key material".
  */
 function classifyGroupError(
 	err: unknown,
@@ -220,7 +216,7 @@ function classifyGroupError(
 
 /**
  * Re-throw if the error is an `AbortError` from an aborted signal. Decrypt
- * failures populate `decrypt_error` per §10.2, but user cancellation (via
+ * failures populate `decrypt_error`, but user cancellation (via
  * `opts.signal` or the op timer) must bubble out as an AbortError rather
  * than being silently converted to a `decrypt_error` string on an
  * otherwise "successful" page.

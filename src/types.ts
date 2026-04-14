@@ -6,7 +6,7 @@
  * static type inference (via `z.infer<typeof schema>`).
  *
  * NOTE: All datetime fields use ISO-8601 strings (not Date objects) to match
- * the Python SDK's Pydantic datetime serialisation and the API wire format.
+ * the API wire format.
  */
 
 import { z } from "zod";
@@ -86,12 +86,11 @@ export function asWebhookUuid(s: string): WebhookUuid {
 }
 
 // ---------------------------------------------------------------------------
-// MessageType — const-object enum (SPEC §7.2, §10.9, D6a)
+// MessageType — const-object enum
 // ---------------------------------------------------------------------------
 
 /**
- * Canonical rine message type strings. Derived from `PROTOCOL.md §458-474`
- * and the Python SDK constants (`rine-sdk/src/rine/_constants.py:48`).
+ * Canonical rine message type strings. Derived from `PROTOCOL.md §458-474`.
  *
  * Use these rather than raw strings — IDE autocomplete + compile-time
  * validation + no typo-drift between consumers.
@@ -133,7 +132,7 @@ export const MessageType = {
 	// Text (used by e2e tests)
 	Text: "rine.v1.text",
 
-	// A2A Protocol Bridge (forward-looking, D6)
+	// A2A Protocol Bridge (forward-looking)
 	A2AMessage: "a2a.v1.message",
 } as const;
 
@@ -143,7 +142,7 @@ export type KnownMessageType = (typeof MessageType)[keyof typeof MessageType];
 /**
  * `MessageType` with an escape hatch for namespaced custom types. The
  * `string & {}` trick preserves autocomplete for the canonical union while
- * still accepting any other string — matching SPEC §7.2 / §10.9 exactly.
+ * still accepting any other string.
  */
 export type MessageTypeString = KnownMessageType | (string & {});
 
@@ -229,7 +228,7 @@ export function isValidMessageType(s: string): boolean {
 /**
  * Message types the E2EE layer consumes internally and that must NEVER
  * surface to user code. Enforced by `client.messages()` and `defineAgent`
- * via the `includeReserved` debug escape hatch (SPEC D6d).
+ * via the `includeReserved` debug escape hatch.
  */
 export const RESERVED_MESSAGE_TYPES: ReadonlySet<MessageTypeString> = new Set<
 	MessageTypeString
@@ -314,7 +313,7 @@ export const DecryptedMessageSchema = MessageReadSchema.extend({
  * Decrypted message envelope. The `T` generic narrows `plaintext` end-to-end
  * when a `StandardSchemaV1<T>` is supplied to `read<T>`, `messages<T>`,
  * `sendAndWait<Req, Rep>`, `conversation(id).{messages,history}<T>`, or
- * `defineAgent<T>` — SPEC §7.3 / §7.4 / §11.4.
+ * `defineAgent<T>`.
  *
  * Default `T = unknown` forces callers to narrow before use. Without a
  * schema the runtime plaintext is whatever rine-core's decrypt helpers
@@ -520,8 +519,7 @@ export type WebhookJobSummary = z.infer<typeof WebhookJobSummarySchema>;
 export const QuotaEntrySchema = z.object({
 	limit: z.number().int().nullable(),
 	// `used` is omitted for per-resource quotas (e.g. max_webhooks_per_agent)
-	// where a single org-level aggregate doesn't make sense. Matches Python
-	// SDK: `used: int | None = None`.
+	// where a single org-level aggregate doesn't make sense.
 	used: z.number().int().nullable().optional(),
 });
 export type QuotaEntry = z.infer<typeof QuotaEntrySchema>;
@@ -541,10 +539,10 @@ export type PollTokenResponse = z.infer<typeof PollTokenResponseSchema>;
 
 // --- SSE Events ---
 
-// Per SPEC_v2 §12.2: server emits `message`, `heartbeat`, `status`; SDK synthesizes
-// `disconnect` on stream close. `ack` is intentionally absent (server never emits it).
-// The typed payload refactor (`data: string` → `message: MessageRead`) is deferred to
-// a later step — this v0.1 shape is the flat envelope used by the current consumers.
+// The server emits `message`, `heartbeat`, `status`; the SDK synthesizes
+// `disconnect` on stream close. `ack` is intentionally absent (the server
+// never emits it). `data` is the raw event string — higher-level typed
+// payloads are not currently surfaced on this envelope.
 export const RineEventSchema = z.object({
 	type: z.enum(["message", "heartbeat", "status", "disconnect"]),
 	data: z.string(),

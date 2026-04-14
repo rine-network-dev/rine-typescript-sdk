@@ -1,5 +1,5 @@
 /**
- * Unit tests for `utils/schema.ts` — SPEC §7.4 / §11.4.
+ * Unit tests for `utils/schema.ts`.
  *
  * Every test uses a hand-rolled Standard Schema v1 implementation so the
  * SDK has no hidden runtime dependency on Zod / Valibot / ArkType during

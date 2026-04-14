@@ -20,9 +20,8 @@ export class PollingResource {
 	 *
 	 * Route: reads `poll_url` from the default credential entry (a full path
 	 * like `/poll/<token>` stamped in at agent-create time). The server does
-	 * NOT expose a bare `/poll` endpoint — this was a route drift in the
-	 * original TS rework surfaced by the step-27 audit. Matches Python
-	 * `AsyncRineClient.poll` (`_client.py:623-636`).
+	 * NOT expose a bare `/poll` endpoint — always read the token-scoped URL
+	 * out of credentials.
 	 *
 	 * @example
 	 * ```ts

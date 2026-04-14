@@ -52,7 +52,7 @@ export type { StreamOptions };
 // `RESERVED_MESSAGE_TYPES` is imported from `./types.js` — single-source
 // definition used by `messages()`, `defineAgent`, and public re-exports.
 // Reserved types are filtered from `client.messages()` unconditionally
-// unless `includeReserved: true` is passed (SPEC §11.1.3 / D6d). The only
+// unless `includeReserved: true` is passed. The only
 // entry — `rine.v1.sender_key_distribution` — is consumed by rine-core's
 // crypto ingest layer before the envelope reaches the SDK.
 
@@ -72,12 +72,12 @@ export interface RineClientOptions {
 	/** Global AbortSignal for all requests. */
 	signal?: AbortSignal;
 	/**
-	 * User middleware chain (SPEC §9.2–§9.6). Composed once at construction
-	 * and wrapped around every SDK HTTP call. The first element is the
-	 * outermost layer — `[logging, retry]` logs before retrying.
+	 * User middleware chain. Composed once at construction and wrapped
+	 * around every SDK HTTP call. The first element is the outermost
+	 * layer — `[logging, retry]` logs before retrying.
 	 *
 	 * Scope boundary: middleware does NOT wrap SSE streams (`client.stream`,
-	 * `client.messages`) or crypto-path HTTP calls. See SPEC §9.6.
+	 * `client.messages`) or crypto-path HTTP calls.
 	 */
 	middleware?: readonly RineMiddleware[];
 }
@@ -98,7 +98,7 @@ export interface SendOptions<T = unknown> {
 	/**
 	 * Standard Schema v1 — validates the outbound payload *before* encrypt.
 	 * A schema failure throws `ValidationError` and no message is sent
-	 * (SPEC §11.4). Zero-runtime-cost type-only integration (D3 / §7.4).
+	 * (validated before encrypt). Zero-runtime-cost type-only integration.
 	 */
 	schema?: StandardSchemaV1<unknown, T>;
 }
@@ -131,7 +131,7 @@ export interface ReadOptions<T = unknown> {
 	 * Standard Schema v1 — JSON-parses `plaintext` and validates it after
 	 * decrypt. On success the returned `DecryptedMessage<T>.plaintext` is
 	 * typed as `T | null`. On failure throws `ValidationError` (the
-	 * cryptography succeeded; the payload shape did not — §11.4).
+	 * cryptography succeeded; the payload shape did not).
 	 */
 	schema?: StandardSchemaV1<unknown, T>;
 }
@@ -154,7 +154,7 @@ export interface WatchOptions {
 }
 
 /**
- * Options for `client.messages()` — SPEC §11.1 / §11.4.
+ * Options for `client.messages()`.
  */
 export interface MessagesOptions<T = unknown> {
 	/**
@@ -181,7 +181,7 @@ export interface MessagesOptions<T = unknown> {
 	 * typed `plaintext`. A validation failure throws `ValidationError` out
 	 * of the generator and iteration ends — same semantics as `read<T>()`.
 	 * Inside `defineAgent<T>({ schema })` the failure is caught and routed
-	 * to `onError({ stage: 'schema' })`; the loop keeps running (§11.3.2).
+	 * to `onError({ stage: 'schema' })`; the loop keeps running.
 	 */
 	schema?: StandardSchemaV1<unknown, T>;
 }
@@ -203,7 +203,7 @@ export class AsyncRineClient implements AsyncDisposable {
 	private readonly http: SDKHttpClient;
 	private readonly _signal?: AbortSignal;
 
-	// Sub-resources. The `messages` slot is reserved for the §11.1 iterator
+	// Sub-resources. The `messages` slot is reserved for the public iterator
 	// method on the public surface; the underlying resource is stashed
 	// privately so `send` / `inbox` / `read` / `reply` / `sendAndWait` can
 	// delegate without shadowing the iterator method name.
@@ -265,7 +265,7 @@ export class AsyncRineClient implements AsyncDisposable {
 				`client.send() expects (to, payload, opts); first arg must be a recipient handle or UUID, got ${typeof to}. Did you pass the payload first?`,
 			);
 		}
-		// SPEC §11.4: outbound schema validates *before* encrypt. Running
+		// Outbound schema validates *before* encrypt. Running
 		// validation here (client-layer) rather than inside the resource
 		// keeps the schema slot observable at the public API boundary and
 		// lets the resource stay schema-free.
@@ -299,7 +299,7 @@ export class AsyncRineClient implements AsyncDisposable {
 			signal: this._signal,
 			...rest,
 		});
-		// SPEC §11.4: `replySchema` narrows the decrypted reply. Only apply
+		// `replySchema` narrows the decrypted reply. Only apply
 		// it when the cryptography succeeded; a decrypt-failed envelope is
 		// returned untouched so callers branch on `decrypt_error`.
 		if (
@@ -323,7 +323,7 @@ export class AsyncRineClient implements AsyncDisposable {
 	 *
 	 * Walks `nextCursor` until exhausted and yields each `DecryptedMessage` as
 	 * it arrives. Lazy — holds at most one page in memory. Replaces the
-	 * deleted `CursorPage.autoPaginate(fetchPage)` helper per SPEC §13.2/§13.3.
+	 * removed `CursorPage.autoPaginate(fetchPage)` helper.
 	 *
 	 * @example
 	 * ```ts
@@ -352,7 +352,7 @@ export class AsyncRineClient implements AsyncDisposable {
 			signal: this._signal,
 			...rest,
 		});
-		// SPEC §11.4: inbound schema runs *after* decrypt. On a decrypt-
+		// Inbound schema runs *after* decrypt. On a decrypt-
 		// failed envelope the message is returned untouched so the caller
 		// can branch on `decrypt_error`.
 		if (schema !== undefined && msg.decrypt_error == null) {
@@ -396,22 +396,22 @@ export class AsyncRineClient implements AsyncDisposable {
 	}
 
 	/**
-	 * Decrypted message iterator — the agentic headline surface (§11.1).
+	 * Decrypted message iterator — the agentic headline surface.
 	 *
 	 * Thin transform over `this.streams.stream()` that parses the inline
 	 * `MessageRead` envelope from each `event: message` SSE frame, runs the
-	 * pre-decrypt type filter (D6c) and reserved-type hiding (D6d), then
-	 * decrypts via the shared `decryptEnvelope()` helper.
+	 * pre-decrypt type filter and reserved-type hiding, then decrypts via
+	 * the shared `decryptEnvelope()` helper.
 	 *
-	 * Key property per §11.1.1: decryption is local, not a round-trip via
-	 * `read()`. The server already JSON-encodes the full envelope into the
-	 * SSE `data:` field (`src/rine/api/agent_stream.py:27`), so the SDK
-	 * never needs a second `GET /messages/{id}` per message.
+	 * Key property: decryption is local, not a round-trip via `read()`. The
+	 * server already JSON-encodes the full envelope into the SSE `data:`
+	 * field, so the SDK never needs a second `GET /messages/{id}` per
+	 * message.
 	 *
 	 * Lifetime: bound to `opts.signal`. When the signal aborts, the underlying
 	 * SSE connection closes and the generator returns immediately without
 	 * yielding further messages. **No error is thrown on abort** — long-lived
-	 * stream iterators exit silently per SPEC_v2 §12.4, matching the standard
+	 * stream iterators exit silently, matching the standard
 	 * async-iterator cancellation contract. To distinguish "aborted" from
 	 * "ended naturally", check `opts.signal?.aborted` after the `for await`
 	 * loop exits. Without a signal, iteration continues until the caller
@@ -424,7 +424,7 @@ export class AsyncRineClient implements AsyncDisposable {
 	 * discipline as `inbox()` / `read()`.
 	 *
 	 * Typed payload generics (`messages<T>({ schema })`) and the Standard
-	 * Schema v1 validation hook are wired end-to-end in Step 19: if `schema`
+	 * Schema v1 validation hook are wired end-to-end: if `schema`
 	 * is supplied each decrypted message is JSON-parsed and validated before
 	 * being yielded, and `msg.plaintext` narrows to `T | null`. A schema
 	 * failure throws `ValidationError` out of the generator and iteration
@@ -517,11 +517,12 @@ export class AsyncRineClient implements AsyncDisposable {
 				agentId,
 				msg: envelope,
 			});
-			// SPEC §11.4: inbound schema runs post-decrypt. Decrypt-failed
-			// envelopes bypass the schema check so callers can branch on
+			// Inbound schema runs post-decrypt. Decrypt-failed envelopes
+			// bypass the schema check so callers can branch on
 			// `decrypt_error`. A successful-decrypt / schema-fail path throws
-			// `ValidationError` out of the generator and iteration ends
-			// (§11.4: "outside defineAgent, the generator throws").
+			// `ValidationError` out of the generator and iteration ends;
+			// inside `defineAgent` the failure is caught and routed to
+			// `onError({ stage: 'schema' })`.
 			const typed =
 				opts.schema !== undefined && decrypted.decrypt_error == null
 					? await parseMessagePlaintext(decrypted, opts.schema)
@@ -531,7 +532,7 @@ export class AsyncRineClient implements AsyncDisposable {
 	}
 
 	/**
-	 * Scoped conversation builder — SPEC §11.2.
+	 * Scoped conversation builder.
 	 *
 	 * Returns a `ConversationScope` whose `send`, `reply`, `messages`, and
 	 * `history` methods auto-pin `conversation_id`. The returned object
@@ -539,10 +540,9 @@ export class AsyncRineClient implements AsyncDisposable {
 	 * resources, or open connections eagerly, so callers can construct
 	 * one per dispatch cycle without worrying about teardown.
 	 *
-	 * Explicitly NOT the Non-goal "conversation management API"
-	 * (§10.13): no `.metadata()` / `.status()` / `.participants()` in
-	 * v0.1. When the server endpoints ship those are additive methods
-	 * and no existing signature changes.
+	 * No `.metadata()` / `.status()` / `.participants()` methods are
+	 * currently exposed on the scope; those would be additive if added
+	 * later.
 	 *
 	 * @example
 	 * ```ts
@@ -584,10 +584,8 @@ export class AsyncRineClient implements AsyncDisposable {
 	/**
 	 * Watch for incoming messages via polling — calls `handler` on each new message.
 	 *
-	 * Note: `watch()` is NOT in the Python SDK — it is a TypeScript-only ergonomic
-	 * surface added for polling agents behind firewalls.
-	 *
-	 * Returns an unsubscribe function.
+	 * Ergonomic surface for polling agents behind firewalls (where SSE is
+	 * unavailable). Returns an unsubscribe function.
 	 */
 	async watch<M = DecryptedMessage>(
 		handler: (msg: M) => Promise<void> | void,
@@ -698,7 +696,7 @@ export class AsyncRineClient implements AsyncDisposable {
 	/**
 	 * Auto-paginating async iterator over every agent that matches the
 	 * supplied discovery filters. Walks `nextCursor` until exhausted.
-	 * Replaces `CursorPage.autoPaginate()` per SPEC §13.2/§13.3.
+	 * Replaces the removed `CursorPage.autoPaginate()` helper.
 	 */
 	async *discoverAll(filters?: DiscoveryFilters) {
 		let cursor = filters?.cursor;
@@ -733,13 +731,13 @@ export class AsyncRineClient implements AsyncDisposable {
 	// -------------------------------------------------------------------------
 
 	/**
-	 * Python-parity `with_options` — returns a new `AsyncRineClient` that
-	 * shares credentials and middleware but applies the supplied overrides.
-	 * Any option not provided inherits from this client.
+	 * Returns a new `AsyncRineClient` that shares credentials and middleware
+	 * but applies the supplied overrides. Any option not provided inherits
+	 * from this client.
 	 *
-	 * See SPEC §10.8 — this is the idiomatic single-method replacement for
-	 * the narrower `withSignal` / `withTimeout` / `withAgent` helpers, which
-	 * remain available for callers that prefer the specialised APIs.
+	 * This is the idiomatic single-method replacement for the narrower
+	 * `withSignal` / `withTimeout` / `withAgent` helpers, which remain
+	 * available for callers that prefer the specialised APIs.
 	 */
 	withOptions(opts: {
 		timeout?: number;

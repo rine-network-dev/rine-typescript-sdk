@@ -263,8 +263,8 @@ describe("SDKHttpClient cancellation — SDK timeout", () => {
 
 	it("user abort wins the race when both fire — yields native AbortError", async () => {
 		// Arrange: fire the user abort before the SDK timeout. Both would
-		// eventually cause `fetch` to reject, but §14.4 says the user-signal
-		// path must be reported as a native AbortError, never a timeout.
+		// eventually cause `fetch` to reject, but the user-signal path
+		// must be reported as a native AbortError, never a timeout.
 		const http = new SDKHttpClient({
 			apiUrl: "https://api.test",
 			timeout: 1_000,
@@ -349,16 +349,16 @@ describe("SDKHttpClient — internal timer hygiene", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Resource-layer integration — SPEC §16.4 GAP-2 closure
+// Resource-layer integration
 //
 // The HTTP-layer tests above cover `SDKHttpClient.get/.post` in isolation.
-// `MessagesResource.inbox()` wraps its HTTP call in `beginOp()` (messages.ts
-// §456) which composes the user signal with a per-operation timeout AC
-// before forwarding to `http.get()`. That wiring is distinct enough to
-// deserve its own regression — SPEC §16.4 names `inbox()` specifically.
+// `MessagesResource.inbox()` wraps its HTTP call in `beginOp()` which
+// composes the user signal with a per-operation timeout AC before forwarding
+// to `http.get()`. That wiring is distinct enough to deserve its own
+// regression.
 // ---------------------------------------------------------------------------
 
-describe("MessagesResource cancellation — resource-layer (SPEC §16.4 inbox)", () => {
+describe("MessagesResource cancellation — resource-layer (inbox)", () => {
 	let fx: ReturnType<typeof installFetchStub>;
 	beforeEach(() => {
 		fx = installFetchStub();

@@ -1,15 +1,15 @@
 /**
  * Bounded FIFO seen-ID set.
  *
- * Used by both the SSE stream layer (reconnect replay dedup per SPEC_v2 §12.3.3)
- * and the poll-based `watch()` path (see `client.ts`). On reconnect with
+ * Used by both the SSE stream layer (reconnect replay dedup) and the
+ * poll-based `watch()` path (see `client.ts`). On reconnect with
  * `Last-Event-ID`, the server's catch-up phase can race with the NOTIFY
  * delivery and re-emit events already seen; this class is the guard against
  * dispatching them twice.
  *
- * Capacity defaults to 500 (SPEC §12.3.3 N — ~18 KB of RAM, ~10 minutes of
- * traffic at 1 msg/s — comfortably larger than any plausible reconnect
- * replay window, small enough to stay negligible).
+ * Capacity defaults to 500 (~18 KB of RAM, ~10 minutes of traffic at 1 msg/s
+ * — comfortably larger than any plausible reconnect replay window, small
+ * enough to stay negligible).
  */
 
 export class SeenIds {

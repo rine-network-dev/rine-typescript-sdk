@@ -22,7 +22,7 @@
  * constructor) and stub the transport/decrypt boundary only. Each test
  * asserts on (a) the schema hook firing at the right moment, (b) the
  * right-shaped value flowing through, and (c) failures routing through
- * the SPEC'd path (throw vs. onError vs. skip).
+ * the documented path (throw vs. onError vs. skip).
  */
 
 import { randomUUID } from "node:crypto";
@@ -421,7 +421,7 @@ describe("client.messages<T>({ schema })", () => {
 		expect(out[0]?.plaintext).toEqual(plaintextValue);
 	});
 
-	it("throws SchemaValidationError mid-iteration when the schema rejects a yielded message (§11.4)", async () => {
+	it("throws SchemaValidationError mid-iteration when the schema rejects a yielded message", async () => {
 		const client = makeStreamingClient([
 			{
 				id: randomUUID(),

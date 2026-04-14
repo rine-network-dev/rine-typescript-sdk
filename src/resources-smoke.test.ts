@@ -1,17 +1,16 @@
 /**
  * Resource smoke tests — covers the passthrough resources
- * (`groups`, `webhooks`, `polling`, plus the `decryptEnvelope` dispatch)
- * so the Step-21 `≥ 70%` function-coverage threshold is met.
+ * (`groups`, `webhooks`, `polling`, plus the `decryptEnvelope` dispatch).
  *
  * These tests are intentionally shallow: they verify route + body + a
- * single response round-trip per method. Behavioural depth lives in the
- * audit-regression suite and in the resource-specific test files.
+ * single response round-trip per method. Deeper behavioural coverage
+ * lives in the regression suite and in the resource-specific test files.
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
-// Mock rine-core crypto for the decrypt-dispatch test (C2/C3 sibling).
+// Mock rine-core crypto for the decrypt-dispatch test.
 // ---------------------------------------------------------------------------
 
 const decryptMessageMock = vi.fn();
@@ -26,7 +25,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		decryptGroupMessage: decryptGroupMessageMock,
 		fetchAndIngestPendingSKDistributions: fetchSKMock,
 		// `PollingResource.poll()` reads the default credential entry's
-		// `poll_url` (SPEC §10.2 + step-27 adherence audit B2 fix). Return a
+		// `poll_url`. Return a
 		// deterministic stub here so the tests don't hit the real `loadCredentials`
 		// → `fs.readFileSync` path.
 		loadCredentials: () => ({
@@ -422,9 +421,9 @@ describe("PollingResource", () => {
 		expect(await polling.poll()).toBe(7);
 		expect(await polling.poll()).toBe(3);
 		for (const c of calls) {
-			// Fix from step-27 adherence audit B2: the SDK reads `poll_url`
-			// from the default credential entry rather than hardcoding `/poll`.
-			// The mocked `loadCredentials` above returns `/poll/test-token`.
+			// The SDK reads `poll_url` from the default credential entry
+			// rather than hardcoding `/poll`. The mocked `loadCredentials`
+			// above returns `/poll/test-token`.
 			expect(c.path).toBe("/poll/test-token");
 			expect((c.opts as { unauthenticated: boolean }).unauthenticated).toBe(
 				true,
@@ -590,7 +589,7 @@ describe("decryptEnvelope dispatch", () => {
 });
 
 // ===========================================================================
-// decryptEnvelope — plaintext auto-parse (REQ-05 / sdk-handoff-fixes)
+// decryptEnvelope — plaintext auto-parse
 // ===========================================================================
 
 describe("decryptEnvelope plaintext auto-parse", () => {
@@ -667,7 +666,7 @@ describe("decryptEnvelope plaintext auto-parse", () => {
 			agentId,
 			msg: makeMsg("application/json"),
 		});
-		// Crypto succeeded; format layer is best-effort per SPEC REQ-05.
+		// Crypto succeeded; format layer is best-effort.
 		expect(out.plaintext).toBe("{not json");
 		expect(out.decrypt_error).toBeNull();
 	});

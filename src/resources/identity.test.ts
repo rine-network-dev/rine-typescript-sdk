@@ -63,7 +63,7 @@ function sampleAgentRead(
 const AGENT_ID = "11111111-1111-4111-8111-111111111111" as AgentUuid;
 
 // ---------------------------------------------------------------------------
-// createAgent (audit C6)
+// createAgent
 // ---------------------------------------------------------------------------
 
 describe("IdentityResource.createAgent", () => {
@@ -181,7 +181,7 @@ describe("IdentityResource.createAgent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// rotateKeys (audit C7)
+// rotateKeys
 // ---------------------------------------------------------------------------
 
 describe("IdentityResource.rotateKeys", () => {

@@ -435,7 +435,7 @@ describe("SDKHttpClient middleware integration", () => {
 		expect(fetchStub).not.toHaveBeenCalled();
 	});
 
-	it("openStream does NOT run the middleware pipeline (SPEC §9.6)", async () => {
+	it("openStream does NOT run the middleware pipeline", async () => {
 		// openStream is the SSE path — long-lived, Last-Event-ID resume,
 		// reconnect — incompatible with one-shot middleware. Stub the auth
 		// helpers (vi.mock at top of file) so openStream actually reaches
@@ -464,7 +464,7 @@ describe("SDKHttpClient middleware integration", () => {
 		expect(middlewareRuns).toBe(0);
 	});
 
-	it("getCoreHttpClient does NOT run the middleware pipeline (SPEC §6.5)", async () => {
+	it("getCoreHttpClient does NOT run the middleware pipeline", async () => {
 		// getCoreHttpClient returns a rine-core HttpClient for the crypto
 		// path. Calls through it must bypass SDK middleware entirely — the
 		// crypto layer has its own retry/auth semantics.

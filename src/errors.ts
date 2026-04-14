@@ -1,7 +1,6 @@
 /**
  * Typed error hierarchy for the Rine SDK.
  *
- * Mirrors the Python SDK error hierarchy (rine/errors.py) but adapted for TypeScript.
  * All error classes are compatible with the `raiseForStatus()` pattern.
  */
 

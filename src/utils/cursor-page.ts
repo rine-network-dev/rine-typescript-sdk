@@ -1,10 +1,9 @@
 /**
  * CursorPage<T> — async iterable + hasNext/hasPrev.
  *
- * Mirrors the Python SDK's CursorPage[T] pattern. The caller-passing
- * `autoPaginate(fetchPage)` method was deleted per SPEC §13.3 — use the
- * dedicated `client.inboxAll()` / `client.discoverAll()` / `client.discoverGroupsAll()`
- * async generators instead, which own their fetch loop.
+ * Cursor-paginated response wrapper. For automatic iteration across pages
+ * use the dedicated `client.inboxAll()` / `client.discoverAll()` /
+ * `client.discoverGroupsAll()` async generators, which own their fetch loop.
  */
 
 /**

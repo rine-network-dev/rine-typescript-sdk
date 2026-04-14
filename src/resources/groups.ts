@@ -2,9 +2,9 @@
  * Groups resource — create, get, list, join, members, invite,
  * update, delete, removeMember, listRequests, vote.
  *
- * Step 10 — Track B: routes + bodies aligned with server endpoints per
- * SPEC §10.6. Handle-resolution (`_resolveGroupAsync`) is not added here
- * (Step 11+), so UUID-only parameters remain the current limit.
+ * Routes and bodies align with the server endpoints documented in
+ * `PROTOCOL.md`. Handle-resolution (`_resolveGroupAsync`) is not wired
+ * through on this resource, so UUID-only parameters are the current limit.
  */
 
 import { parse, parseCursorPage } from "../api/adapters.js";
@@ -198,9 +198,8 @@ export class GroupsResource {
 	/**
 	 * List pending join requests for a group.
 	 *
-	 * Route: `GET /groups/{groupId}/requests` (fixes parity gap — TS
-	 * previously used `/join-requests`). Returns a plain array to match
-	 * Python SDK `groups.list_requests`.
+	 * Route: `GET /groups/{groupId}/requests`. Returns the list of pending
+	 * requests as a plain array.
 	 */
 	async listRequests(groupId: GroupUuid): Promise<readonly JoinRequestRead[]> {
 		const raw = await this.http.get<unknown>(`/groups/${groupId}/requests`, {
@@ -211,8 +210,7 @@ export class GroupsResource {
 	}
 
 	/**
-	 * Vote on a pending join request (fixes audit C-adjacent — missing
-	 * group segment).
+	 * Vote on a pending join request.
 	 *
 	 * Route: `POST /groups/{groupId}/requests/{requestId}/vote`.
 	 */

@@ -65,8 +65,8 @@ export class MessagesResource {
 	): Promise<MessageRead> {
 		// Outbound schema validation runs at the client-layer wrapper
 		// (`AsyncRineClient.send<T>`) so the resource layer receives an
-		// already-validated payload. SPEC §11.4 — one validation pass per
-		// outbound logical call.
+		// already-validated payload — one validation pass per outbound
+		// logical call.
 		const op = this.beginOp(opts.signal);
 		try {
 			const core = this.http.getCoreHttpClient({ signal: op.signal });
@@ -94,7 +94,7 @@ export class MessagesResource {
 	}
 
 	/**
-	 * Fetch the current agent's inbox with auto-decryption (fixes audit C2).
+	 * Fetch the current agent's inbox with auto-decryption.
 	 *
 	 * Route is `GET /agents/{agentId}/messages` — requires resolving the
 	 * caller's agent UUID up-front (via the same `resolveSenderId()` path as
@@ -103,8 +103,9 @@ export class MessagesResource {
 	 *
 	 * Decryption runs per-item via `decryptEnvelope()`. Failures populate
 	 * `decrypt_error` on the returned `DecryptedMessage` instead of throwing
-	 * — the page still contains the envelope, just without plaintext. This
-	 * matches the Python SDK's "best-effort" inbox contract.
+	 * — the page still contains the envelope, just without plaintext.
+	 * Inbox delivery is best-effort: one broken envelope never poisons the
+	 * whole page.
 	 */
 	async inbox(opts: InboxOptions = {}) {
 		const op = this.beginOp(opts.signal);
@@ -146,13 +147,13 @@ export class MessagesResource {
 	}
 
 	/**
-	 * Fetch and decrypt a single message by id (fixes audit C3).
+	 * Fetch and decrypt a single message by id.
 	 *
 	 * Dispatches to `decryptMessage` (HPKE) or `decryptGroupMessage`
 	 * (sender-key) based on `encryption_version`. On a sender-key failure
 	 * (e.g. the reader has not yet ingested the sender's distribution),
 	 * retries once after calling `fetchAndIngestPendingSKDistributions` via
-	 * the rine-core bridge — matches Python SDK discipline.
+	 * the rine-core bridge.
 	 *
 	 * Failures on the HPKE path or after the sender-key retry populate
 	 * `decrypt_error` on the returned message instead of throwing, so
@@ -417,9 +418,7 @@ export class MessagesResource {
 
 		// 1:1 HPKE path. resolveToUuid accepts UUIDs (pass-through) and agent
 		// handles (WebFinger lookup). Raw bare names are not supported here —
-		// the SDK requires a handle or UUID for the recipient. Fixes audit
-		// SERIOUS-7 (removes the parallel `/directory/agents/{handle}` path
-		// the old TS-SDK used).
+		// the SDK requires a handle or UUID for the recipient.
 		const recipientId = await resolveToUuid(this.http.apiUrl, target);
 		const recipientPk = await fetchRecipientEncryptionKey(core, recipientId);
 		const encrypted = await encryptMessage(
@@ -441,18 +440,17 @@ export class MessagesResource {
 	 * Precedence: explicit override → SDK default agent → single-agent
 	 * shortcut (errors on multi-agent orgs).
 	 *
-	 * Makes one `GET /agents` request per send; caching is deferred (the
-	 * Python SDK and rine-cli do not cache either).
+	 * Makes one `GET /agents` request per send; no local caching.
 	 *
 	 * Also verifies the resolved agent is in the caller's own org. `resolveAgent`
 	 * short-circuits on UUIDs without validating membership, so a foreign-org
 	 * UUID (e.g. an `original.to_agent_id` from a misrouted reply) would slip
 	 * through and fail later inside `loadAgentKeys` with a confusing "keys file
 	 * not found" filesystem error. The membership check turns that into a clear
-	 * "not your agent" error (addresses Step 11 audit R3).
+	 * "not your agent" error.
 	 *
-	 * Exposed as `public` (not `private`) so `client.messages()` (§11.1) can
-	 * reuse the same resolution path for its SSE-bound decryption loop.
+	 * Exposed as `public` (not `private`) so `client.messages()` can reuse
+	 * the same resolution path for its SSE-bound decryption loop.
 	 */
 	async resolveSenderId(
 		core: CoreHttpClient,
@@ -477,12 +475,11 @@ export class MessagesResource {
 	/**
 	 * Open an operation-scoped cancellation window that spans the whole
 	 * encrypt → post chain. One timer, one AbortController. The `clear`
-	 * callback must run in `finally` to satisfy audit MINOR-4 (timer leak).
+	 * callback must run in `finally` to avoid a timer leak.
 	 *
 	 * The op-timer aborts with a `RineTimeoutError` reason so that callers
 	 * and `SDKHttpClient.request()` can distinguish user-signal abort
 	 * (native AbortError) from SDK op-timer expiry (`RineTimeoutError`).
-	 * Fixes the step-27 crypto audit Cr1 (SPEC §14.4).
 	 */
 	private beginOp(userSignal: AbortSignal | undefined): OpScope {
 		const timeoutAC = new AbortController();
