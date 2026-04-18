@@ -14,6 +14,7 @@ import {
 	fetchAgents,
 	fetchRecipientEncryptionKey,
 	getOrCreateSenderKey,
+	normalizeHandle,
 	resolveAgent,
 	resolveToUuid,
 } from "@rine-network/core";
@@ -377,7 +378,7 @@ export class MessagesResource {
 		payload: unknown,
 		opts: SendOptions,
 	): Promise<Record<string, unknown>> {
-		const target = to as string;
+		const target = normalizeHandle(to as string);
 		const base: Record<string, unknown> = {
 			type: opts.type ?? DEFAULT_SEND_TYPE,
 			content_type: opts.contentType ?? "application/json",

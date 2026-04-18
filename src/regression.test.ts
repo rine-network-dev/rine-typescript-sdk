@@ -249,6 +249,135 @@ describe("send() — route and body shape", () => {
 });
 
 // ===========================================================================
+// Short-handle normalization — send()
+// ===========================================================================
+
+describe("send() — short-handle normalization", () => {
+	it("short agent handle is normalized before resolveToUuid", async () => {
+		// "alice@acmecorp" has no dot in the domain — normalizeHandle appends
+		// ".rine.network" before the handle reaches resolveToUuid.
+		const { http } = makeHttpStub({
+			post: () => sampleMessageRead(),
+		});
+		const messages = new MessagesResource(http);
+
+		await messages.send("alice@acmecorp" as AgentHandle, { text: "hi" });
+
+		// resolveToUuid must receive the expanded handle, not the raw short form.
+		expect(core.resolveToUuid).toHaveBeenCalledWith(
+			expect.any(String),
+			"alice@acmecorp.rine.network",
+		);
+	});
+
+	it("short group handle is normalized before getOrCreateSenderKey", async () => {
+		// "#dev@acmecorp" — short group handle. After normalization it becomes
+		// "#dev@acmecorp.rine.network", which isGroupHandle() still matches, so
+		// the sender-key path is taken.
+		const { http, calls } = makeHttpStub({
+			post: () =>
+				sampleMessageRead({
+					encrypted_payload: "ENC(GROUP)",
+					encryption_version: "sender-key-v1",
+					group_handle: "#dev@acmecorp.rine.network",
+				}),
+		});
+		const messages = new MessagesResource(http);
+
+		await messages.send("#dev@acmecorp" as any, { text: "hi group" });
+
+		// getOrCreateSenderKey receives the normalized handle as its 4th argument.
+		expect(core.getOrCreateSenderKey).toHaveBeenCalledWith(
+			expect.anything(),
+			expect.any(String),
+			expect.any(String),
+			"#dev@acmecorp.rine.network",
+			expect.anything(),
+		);
+
+		// POST body carries the normalized handle in to_handle.
+		const postCalls = calls.filter((c) => c.method === "POST");
+		const body = postCalls[0]?.body as Record<string, unknown>;
+		expect(body.to_handle).toBe("#dev@acmecorp.rine.network");
+	});
+
+	it("full handle passes through without double-appending .rine.network", async () => {
+		// A handle that already contains a dot in its domain must not receive
+		// a second ".rine.network" suffix.
+		const { http } = makeHttpStub({
+			post: () => sampleMessageRead(),
+		});
+		const messages = new MessagesResource(http);
+
+		await messages.send("alice@acmecorp.rine.network" as AgentHandle, {
+			text: "hi",
+		});
+
+		expect(core.resolveToUuid).toHaveBeenCalledWith(
+			expect.any(String),
+			"alice@acmecorp.rine.network",
+		);
+		// Confirm the suffix was NOT doubled.
+		const [, handle] = vi.mocked(core.resolveToUuid).mock.calls[0] as [
+			string,
+			string,
+		];
+		expect(handle).not.toContain("rine.network.rine.network");
+	});
+});
+
+// ===========================================================================
+// Short-handle normalization — sendAndWait()
+// ===========================================================================
+
+describe("sendAndWait() — short-handle normalization", () => {
+	it("short agent handle is normalized in sendAndWait", async () => {
+		// sendAndWait delegates to buildSendBody which calls normalizeHandle,
+		// so the short handle should reach resolveToUuid fully expanded.
+		const CONV_ID = "55555555-5555-4555-8555-555555555555";
+		const { http, calls } = makeHttpStub({
+			post: (p) => {
+				if (p === "/messages/sync") {
+					return {
+						message: sampleMessageRead({ conversation_id: CONV_ID }),
+						reply: null,
+						conversation_id: CONV_ID,
+						status: "timeout",
+					};
+				}
+				return {};
+			},
+		});
+		const messages = new MessagesResource(http);
+
+		await messages.sendAndWait("bob@myorg" as AgentHandle, { text: "sync" });
+
+		// resolveToUuid must receive the fully-qualified handle.
+		expect(core.resolveToUuid).toHaveBeenCalledWith(
+			expect.any(String),
+			"bob@myorg.rine.network",
+		);
+
+		// The POST must go to /messages/sync (not /messages).
+		const postCalls = calls.filter((c) => c.method === "POST");
+		expect(postCalls).toHaveLength(1);
+		expect(postCalls[0]?.path).toBe("/messages/sync");
+	});
+
+	it("short group handle is rejected by sendAndWait", async () => {
+		// sendAndWait checks isGroupHandle on the raw (pre-normalization) handle
+		// before entering buildSendBody. The GROUP_HANDLE_RE matches short-form
+		// group handles like "#team@acme" so the rejection must fire.
+		const { http } = makeHttpStub({});
+		const messages = new MessagesResource(http);
+
+		await expect(
+			messages.sendAndWait("#team@acme" as any, { text: "hi" }),
+		).rejects.toThrow("does not support group handles");
+	});
+});
+
+// ===========================================================================
 // C2 — inbox() decryption
 // ===========================================================================
 
