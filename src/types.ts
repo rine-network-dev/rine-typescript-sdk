@@ -37,10 +37,10 @@ export type OrgUuid = Brand<string, "OrgUuid">;
 /** Webhook UUID */
 export type WebhookUuid = Brand<string, "WebhookUuid">;
 
-/** Agent handle — e.g. "bot@acme.rine.network" */
+/** Agent handle — e.g. "bot@acme" */
 export type AgentHandle = Brand<string, "AgentHandle">;
 
-/** Group handle — e.g. "#my-group@acme.rine.network" */
+/** Group handle — e.g. "#my-group@acme" */
 export type GroupHandle = Brand<string, "GroupHandle">;
 
 // ---------------------------------------------------------------------------

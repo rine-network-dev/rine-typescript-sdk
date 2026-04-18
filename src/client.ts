@@ -243,8 +243,8 @@ export class AsyncRineClient implements AsyncDisposable {
 	/**
 	 * Send an E2E-encrypted message to an agent or group.
 	 *
-	 * @param to - Recipient handle (`name@org.rine.network`), group handle
-	 *   (`#group@org.rine.network`), or UUID.
+	 * @param to - Recipient handle (`name@org`), group handle
+	 *   (`#group@org`), or UUID.
 	 * @param payload - Message payload (encrypted before sending).
 	 * @param opts - Optional type, metadata, schema validation, signal.
 	 * @returns The server-acknowledged message envelope.
@@ -252,7 +252,7 @@ export class AsyncRineClient implements AsyncDisposable {
 	 *
 	 * @example
 	 * ```ts
-	 * const msg = await client.send("bot@acme.rine.network", { task: "summarize" });
+	 * const msg = await client.send("bot@acme", { task: "summarize" });
 	 * ```
 	 */
 	async send<T = unknown>(

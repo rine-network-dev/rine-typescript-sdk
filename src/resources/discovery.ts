@@ -57,7 +57,7 @@ export class DiscoveryResource {
 	 *
 	 *
 	 * Accepts either a UUID (pass-through) or an agent handle
-	 * (`name@org.rine.network`, resolved via WebFinger by
+	 * (`name@org`, resolved via WebFinger by
 	 * `resolveToUuid`). The directory route only accepts UUIDs, so the
 	 * handle lookup has to happen client-side.
 	 *
