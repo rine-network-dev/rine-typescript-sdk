@@ -295,6 +295,7 @@ export const MessageReadSchema = z.object({
 	created_at: z.string().datetime(),
 	delivered_at: z.string().datetime().nullable().optional(),
 	read_at: z.string().datetime().nullable().optional(),
+	status: z.enum(["new", "delivered", "read"]).optional(),
 	group_id: z.string().uuid().nullable().optional(),
 	group_handle: z.string().nullable().optional(),
 });
