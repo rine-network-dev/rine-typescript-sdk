@@ -4,9 +4,12 @@
  *
  * Dispatch is driven by `encryption_version`:
  *   - `hpke-v1`        → `decryptMessage` (1:1, recipient's X25519 private key).
- *   - `sender-key-v1`  → `decryptGroupMessage`. On a sender-key dispatch failure,
- *                        optionally retries once after calling
+ *   - `sender-key-v1`  → `decryptGroupMessage` (version byte 0x02). On a
+ *                        dispatch failure, optionally retries once after
  *                        `fetchAndIngestPendingSKDistributions`.
+ *   - `mls-v1`         → `decryptGroupMessage` (version byte 0x04; auto-routed
+ *                        inside core). On failure, optionally retries once
+ *                        after `processMlsWelcomes`.
  *   - anything else    → returned as-is with `decrypt_error` populated.
  *
  * Crypto failures (including the post-retry failure on the sender-key path)
@@ -22,6 +25,8 @@ import {
 	decryptGroupMessage,
 	decryptMessage,
 	fetchAndIngestPendingSKDistributions,
+	processMlsWelcomes,
+	syncMlsGroup,
 } from "@rine-network/core";
 import type { DecryptedMessage } from "../types.js";
 
@@ -64,7 +69,7 @@ export async function decryptEnvelope(
 	}
 
 	try {
-		if (msg.encryption_version === "hpke-v1") {
+		if (msg.encryption_version === "hpke-v1" || msg.encryption_version === "hpke-hybrid-v1") {
 			const result = await decryptMessage(
 				configDir,
 				agentId,
@@ -74,7 +79,14 @@ export async function decryptEnvelope(
 			return applyDecryptResult(msg, result);
 		}
 
-		if (msg.encryption_version === "sender-key-v1") {
+		// Group decrypt covers both sender-key (`sender-key-v1`, version byte
+		// 0x02) and MLS (`mls-v1`, version byte 0x04). `decryptGroupMessage`
+		// auto-dispatches on the version byte — the rine group UUID
+		// (`msg.group_id`) is the only state key. Only the retry recovery
+		// differs: sender-key ingests pending distributions, MLS installs
+		// pending Welcomes.
+		const isMls = msg.encryption_version === "mls-v1";
+		if (msg.encryption_version === "sender-key-v1" || isMls) {
 			if (!msg.group_id) {
 				return applyDecryptError(msg, "sender-key message missing group_id");
 			}
@@ -96,11 +108,20 @@ export async function decryptEnvelope(
 						classifyGroupError(firstErr),
 					);
 				}
-				// Retry: fetch pending sender-key distributions and try once
-				// more. If retry also fails, the second error is the one the
-				// caller sees — it's the more informative failure mode.
+				// Retry: refresh missing key material and try once more. If
+				// retry also fails, the second error is the one the caller
+				// sees — it's the more informative failure mode.
 				try {
-					await fetchAndIngestPendingSKDistributions(core, configDir, agentId);
+					if (isMls) {
+						await processMlsWelcomes(configDir, agentId, core);
+						await syncMlsGroup(configDir, agentId, msg.group_id!, core);
+					} else {
+						await fetchAndIngestPendingSKDistributions(
+							core,
+							configDir,
+							agentId,
+						);
+					}
 					const retry = await decryptGroupMessage(
 						configDir,
 						agentId,

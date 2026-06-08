@@ -121,6 +121,39 @@ describe("IdentityResource.createAgent", () => {
 		expect(agent.id).toBe(AGENT_ID);
 	});
 
+	it("uploads the post-quantum encryption public key as an ML-KEM JWK", async () => {
+		// H1 regression: createAgent omitted pq_encryption_public_key entirely,
+		// so the server never learned the agent's ML-KEM key and could not
+		// advertise it to senders — silently disabling hpke-hybrid-v1.
+		const { http, posts } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
+		const identity = new IdentityResource(http);
+
+		await identity.createAgent("alice");
+
+		const body = posts[0]?.body as Record<string, unknown>;
+		expect(body).toHaveProperty("pq_encryption_public_key");
+		const pqJwk = body.pq_encryption_public_key as {
+			kty: string;
+			alg: string;
+			x: string;
+			d?: string;
+		};
+		expect(pqJwk).toMatchObject({ kty: "MLKEM", alg: "ML-KEM-768" });
+		// ML-KEM-768 public key is 1184 bytes → 1579 base64url chars.
+		expect(pqJwk.x).toHaveLength(1579);
+		// The persisted private half must never appear in the wire body.
+		expect(pqJwk).not.toHaveProperty("d");
+
+		// The posted PQ public key must match the persisted PQ private keypair's
+		// public half, proving it is the real generated key, not a placeholder.
+		const keys = loadAgentKeys(configDir, AGENT_ID);
+		expect(keys.pqEncryption).toBeDefined();
+		const loadedPqPubB64 = Buffer.from(
+			keys.pqEncryption?.publicKey as Uint8Array,
+		).toString("base64url");
+		expect(loadedPqPubB64).toBe(pqJwk.x);
+	});
+
 	it("forwards create options to the request body without leaking signal", async () => {
 		const { http, posts } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
 		const identity = new IdentityResource(http);
@@ -230,6 +263,43 @@ describe("IdentityResource.rotateKeys", () => {
 		expect(rotated.id).toBe(AGENT_ID);
 	});
 
+	it("uploads a fresh ML-KEM public key on rotation", async () => {
+		// H1 regression: rotateKeys also omitted pq_encryption_public_key, so a
+		// post-rotation agent silently lost its ability to receive hpke-hybrid-v1.
+		const { http, posts } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
+		const identity = new IdentityResource(http);
+
+		await identity.createAgent("alice");
+		const originalKeys = loadAgentKeys(configDir, AGENT_ID);
+		posts.length = 0;
+
+		await identity.rotateKeys(AGENT_ID);
+
+		expect(posts[0]?.path).toBe(`/agents/${AGENT_ID}/keys`);
+		const body = posts[0]?.body as Record<string, unknown>;
+		expect(body).toHaveProperty("pq_encryption_public_key");
+		const pqJwk = body.pq_encryption_public_key as {
+			kty: string;
+			alg: string;
+			x: string;
+			d?: string;
+		};
+		expect(pqJwk).toMatchObject({ kty: "MLKEM", alg: "ML-KEM-768" });
+		expect(pqJwk.x).toHaveLength(1579);
+		expect(pqJwk).not.toHaveProperty("d");
+
+		// Rotation must mint a brand-new ML-KEM keypair, and the uploaded public
+		// key must match the new on-disk PQ private key — not the pre-rotation one.
+		const newKeys = loadAgentKeys(configDir, AGENT_ID);
+		expect(Buffer.from(newKeys.pqEncryption?.privateKey as Uint8Array)).not.toEqual(
+			Buffer.from(originalKeys.pqEncryption?.privateKey as Uint8Array),
+		);
+		const newPqPubB64 = Buffer.from(
+			newKeys.pqEncryption?.publicKey as Uint8Array,
+		).toString("base64url");
+		expect(newPqPubB64).toBe(pqJwk.x);
+	});
+
 	it("forwards the caller's AbortSignal to the underlying POST", async () => {
 		const { http, posts } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
 		const identity = new IdentityResource(http);
@@ -277,5 +347,103 @@ describe("IdentityResource.rotateKeys", () => {
 			/requires a non-empty SDK configDir/,
 		);
 		expect(posts).toHaveLength(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// addPostQuantumKey
+// ---------------------------------------------------------------------------
+
+describe("IdentityResource.addPostQuantumKey", () => {
+	let configDir: string;
+
+	beforeEach(() => {
+		configDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-sdk-identity-"));
+	});
+	afterEach(() => {
+		fs.rmSync(configDir, { recursive: true, force: true });
+	});
+
+	it("generates PQ key, posts with existing signing+encryption, and persists PQ on disk", async () => {
+		const { http, posts } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
+		const identity = new IdentityResource(http);
+
+		await identity.createAgent("alice");
+		const originalKeys = loadAgentKeys(configDir, AGENT_ID);
+		posts.length = 0;
+
+		const pqKeyFile = path.join(configDir, "keys", AGENT_ID, "pq_encryption.key");
+		fs.unlinkSync(pqKeyFile);
+
+		const agent = await identity.addPostQuantumKey(AGENT_ID);
+
+		expect(posts).toHaveLength(1);
+		expect(posts[0]?.path).toBe(`/agents/${AGENT_ID}/keys`);
+		const body = posts[0]?.body as Record<string, unknown>;
+		expect(body).toHaveProperty("pq_encryption_public_key");
+		const pqJwk = body.pq_encryption_public_key as { kty: string; alg: string; x: string };
+		expect(pqJwk).toMatchObject({ kty: "MLKEM", alg: "ML-KEM-768" });
+		expect(pqJwk.x).toHaveLength(1579);
+
+		const sigJwk = body.signing_public_key as { x: string };
+		expect(sigJwk.x).toBe(Buffer.from(originalKeys.signing.publicKey).toString("base64url"));
+
+		const newKeys = loadAgentKeys(configDir, AGENT_ID);
+		expect(newKeys.pqEncryption).toBeDefined();
+		expect(Buffer.from(newKeys.signing.privateKey)).toEqual(Buffer.from(originalKeys.signing.privateKey));
+		expect(Buffer.from(newKeys.encryption.privateKey)).toEqual(Buffer.from(originalKeys.encryption.privateKey));
+		expect(agent.id).toBe(AGENT_ID);
+	});
+
+	it("throws RineError when PQ key already exists", async () => {
+		const { http } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
+		const identity = new IdentityResource(http);
+		await identity.createAgent("alice");
+
+		await expect(identity.addPostQuantumKey(AGENT_ID)).rejects.toThrow(
+			/already has a post-quantum key/,
+		);
+	});
+
+	it("does not save PQ key when POST rejects", async () => {
+		const seed = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
+		await new IdentityResource(seed.http).createAgent("alice");
+
+		const pqKeyFile = path.join(configDir, "keys", AGENT_ID, "pq_encryption.key");
+		fs.unlinkSync(pqKeyFile);
+
+		const failingHttp = {
+			get configDir() { return configDir; },
+			async post() { throw new Error("network down"); },
+		} as unknown as SDKHttpClient;
+		const identity = new IdentityResource(failingHttp);
+
+		await expect(identity.addPostQuantumKey(AGENT_ID)).rejects.toThrow("network down");
+		expect(fs.existsSync(pqKeyFile)).toBe(false);
+	});
+
+	it("refuses when configDir is empty", async () => {
+		const { http, posts } = makeHttpStub("", sampleAgentRead(AGENT_ID));
+		const identity = new IdentityResource(http);
+
+		await expect(identity.addPostQuantumKey(AGENT_ID)).rejects.toThrow(
+			/requires a non-empty SDK configDir/,
+		);
+		expect(posts).toHaveLength(0);
+	});
+
+	it("forwards the caller AbortSignal", async () => {
+		const { http, posts } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
+		const identity = new IdentityResource(http);
+		await identity.createAgent("alice");
+		posts.length = 0;
+
+		const pqKeyFile = path.join(configDir, "keys", AGENT_ID, "pq_encryption.key");
+		fs.unlinkSync(pqKeyFile);
+
+		const ac = new AbortController();
+		await identity.addPostQuantumKey(AGENT_ID, { signal: ac.signal });
+
+		expect(posts[0]?.opts?.signal).toBe(ac.signal);
 	});
 });

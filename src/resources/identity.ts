@@ -6,9 +6,13 @@
 import {
 	encryptionPublicKeyToJWK,
 	generateAgentKeys,
+	generatePqKeyPair,
+	loadAgentKeys,
 	loadCredentials,
+	pqPublicKeyToJWK,
 	saveAgentKeys,
 	saveCredentials,
+	savePqEncryptionKey,
 	signingPublicKeyToJWK,
 } from "@rine-network/core";
 import { parse, parseCursorPage } from "../api/adapters.js";
@@ -36,6 +40,10 @@ export interface CreateAgentOptions {
 }
 
 export interface RotateKeysOptions {
+	signal?: AbortSignal;
+}
+
+export interface AddPostQuantumKeyOptions {
 	signal?: AbortSignal;
 }
 
@@ -128,16 +136,22 @@ export class IdentityResource {
 		const { signal, ...body } = opts ?? {};
 		requireConfigDir(this.http.configDir, "createAgent");
 		const keys = generateAgentKeys();
+		const agentBody: Record<string, unknown> = {
+			name,
+			...body,
+			signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
+			encryption_public_key: encryptionPublicKeyToJWK(
+				keys.encryption.publicKey,
+			),
+		};
+		if (keys.pqEncryption) {
+			agentBody.pq_encryption_public_key = pqPublicKeyToJWK(
+				keys.pqEncryption.publicKey,
+			);
+		}
 		const raw = await this.http.post<unknown>(
 			"/agents",
-			{
-				name,
-				...body,
-				signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-				encryption_public_key: encryptionPublicKeyToJWK(
-					keys.encryption.publicKey,
-				),
-			},
+			agentBody,
 			{ signal, operation: "createAgent" },
 		);
 		const agent = parse(AgentReadSchema, raw);
@@ -211,18 +225,48 @@ export class IdentityResource {
 	async rotateKeys(agentId: AgentUuid, opts?: RotateKeysOptions) {
 		requireConfigDir(this.http.configDir, "rotateKeys");
 		const keys = generateAgentKeys();
+		const keysBody: Record<string, unknown> = {
+			signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
+			encryption_public_key: encryptionPublicKeyToJWK(
+				keys.encryption.publicKey,
+			),
+		};
+		if (keys.pqEncryption) {
+			keysBody.pq_encryption_public_key = pqPublicKeyToJWK(
+				keys.pqEncryption.publicKey,
+			);
+		}
 		const raw = await this.http.post<unknown>(
 			`/agents/${agentId}/keys`,
-			{
-				signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-				encryption_public_key: encryptionPublicKeyToJWK(
-					keys.encryption.publicKey,
-				),
-			},
+			keysBody,
 			{ signal: opts?.signal, operation: "rotateKeys" },
 		);
 		const agent = parse(AgentReadSchema, raw);
 		saveAgentKeys(this.http.configDir, agentId, keys);
+		return agent;
+	}
+
+	async addPostQuantumKey(agentId: AgentUuid, opts?: AddPostQuantumKeyOptions) {
+		requireConfigDir(this.http.configDir, "addPostQuantumKey");
+		const existingKeys = loadAgentKeys(this.http.configDir, agentId);
+		if (existingKeys.pqEncryption) {
+			throw new RineError(
+				`Agent ${agentId} already has a post-quantum key. Use rotateKeys() to replace all keys.`,
+			);
+		}
+		const pqKeyPair = generatePqKeyPair();
+		const keysBody: Record<string, unknown> = {
+			signing_public_key: signingPublicKeyToJWK(existingKeys.signing.publicKey),
+			encryption_public_key: encryptionPublicKeyToJWK(existingKeys.encryption.publicKey),
+			pq_encryption_public_key: pqPublicKeyToJWK(pqKeyPair.publicKey),
+		};
+		const raw = await this.http.post<unknown>(
+			`/agents/${agentId}/keys`,
+			keysBody,
+			{ signal: opts?.signal, operation: "addPostQuantumKey" },
+		);
+		const agent = parse(AgentReadSchema, raw);
+		savePqEncryptionKey(this.http.configDir, agentId, pqKeyPair);
 		return agent;
 	}
 

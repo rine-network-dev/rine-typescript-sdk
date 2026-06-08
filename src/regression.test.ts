@@ -10,7 +10,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // the real crypto/resolve functions at module load time.
 // ---------------------------------------------------------------------------
 
-const CORE_HTTP_STUB = { __stub: "core" };
+// Core HTTP client stub. `get("/groups", { handle })` is exercised by the
+// group send path, which resolves the group to inspect its `mls_group_id`
+// latch. A null latch selects the legacy sender-key path (these regression
+// tests assert sender-key behavior).
+const CORE_HTTP_STUB = {
+	__stub: "core",
+	get: vi.fn(async () => ({
+		items: [
+			{
+				id: "33333333-3333-4333-8333-333333333333",
+				name: "dev",
+				handle: "#dev@acme.rine.network",
+				created_at: "2026-01-01T00:00:00Z",
+				mls_group_id: null,
+			},
+		],
+	})),
+};
 
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const original = (await importOriginal()) as Record<string, unknown>;
@@ -23,14 +40,10 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 				handle: "me@acme.rine.network",
 			},
 		]),
-		resolveAgent: vi.fn(
-			async () => "11111111-1111-4111-8111-111111111111",
-		),
+		resolveAgent: vi.fn(async () => "11111111-1111-4111-8111-111111111111"),
 		// Recipient resolution
-		resolveToUuid: vi.fn(
-			async () => "22222222-2222-4222-8222-222222222222",
-		),
-		fetchRecipientEncryptionKey: vi.fn(async () => new Uint8Array(32)),
+		resolveToUuid: vi.fn(async () => "22222222-2222-4222-8222-222222222222"),
+		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
 		// Encryption returns a body fragment the resource layer spreads.
 		encryptMessage: vi.fn(async () => ({
 			encrypted_payload: "ENC(DM)",
@@ -147,10 +160,7 @@ function makeHttpStub(
 			const r = responses.patch?.(p, body) ?? {};
 			return r as T;
 		},
-		async delete<T>(
-			p: string,
-			opts?: Record<string, unknown>,
-		): Promise<T> {
+		async delete<T>(p: string, opts?: Record<string, unknown>): Promise<T> {
 			calls.push({ method: "DELETE", path: p, opts });
 			const r = responses.delete?.(p) ?? undefined;
 			return r as T;
@@ -494,7 +504,7 @@ describe("reply() — encrypts to original sender", () => {
 		// encryptMessage must have been called with the original sender's
 		// recipient public key — that's the whole point of the fix.
 		expect(core.encryptMessage).toHaveBeenCalledTimes(1);
-		expect(core.fetchRecipientEncryptionKey).toHaveBeenCalledWith(
+		expect(core.fetchRecipientKeys).toHaveBeenCalledWith(
 			CORE_HTTP_STUB,
 			RECIPIENT_UUID,
 		);
@@ -668,10 +678,9 @@ describe("sendAndWait() — atomic sync with decryption", () => {
 		const messages = new MessagesResource(http);
 
 		await expect(
-			messages.sendAndWait(
-				"#team@acme.rine.network" as GroupHandle,
-				{ text: "nope" },
-			),
+			messages.sendAndWait("#team@acme.rine.network" as GroupHandle, {
+				text: "nope",
+			}),
 		).rejects.toThrow("does not support group handles");
 	});
 });
@@ -694,9 +703,10 @@ describe("createAgent() — local keypair generation", () => {
 		// test by importing from vi.importActual — the file-level vi.mock
 		// replaces it with our stubs. We only need the real keygen/persist
 		// helpers to validate the fix.
-		const real = await vi.importActual<typeof import("@rine-network/core")>(
-			"@rine-network/core",
-		);
+		const real =
+			await vi.importActual<typeof import("@rine-network/core")>(
+				"@rine-network/core",
+			);
 		// Override the three functions IdentityResource.createAgent needs.
 		vi.spyOn(core, "generateAgentKeys").mockImplementation(
 			real.generateAgentKeys,
@@ -741,9 +751,7 @@ describe("createAgent() — local keypair generation", () => {
 			fs.existsSync(path.join(configDir, "keys", AGENT_ID_7, "signing.key")),
 		).toBe(true);
 		expect(
-			fs.existsSync(
-				path.join(configDir, "keys", AGENT_ID_7, "encryption.key"),
-			),
+			fs.existsSync(path.join(configDir, "keys", AGENT_ID_7, "encryption.key")),
 		).toBe(true);
 	});
 });
@@ -754,9 +762,10 @@ describe("createAgent() — local keypair generation", () => {
 
 describe("rotateKeys() — route and body", () => {
 	it("POSTs to `/agents/{id}/keys` with both public JWKs in the body", async () => {
-		const real = await vi.importActual<typeof import("@rine-network/core")>(
-			"@rine-network/core",
-		);
+		const real =
+			await vi.importActual<typeof import("@rine-network/core")>(
+				"@rine-network/core",
+			);
 		vi.spyOn(core, "generateAgentKeys").mockImplementation(
 			real.generateAgentKeys,
 		);
@@ -1059,5 +1068,231 @@ describe("branded UUID types — compile-time type safety", () => {
 		expect(agent).toBe("11111111-1111-4111-8111-111111111111");
 		expect(group).toBe("33333333-3333-4333-8333-333333333333");
 		expect(message).toBe("44444444-4444-4444-8444-444444444444");
+	});
+});
+
+// ===========================================================================
+// A5 / A6 — PQ hybrid negotiation on send() and reply() (T2 regression).
+//
+// The branch shipped post-quantum hybrid encryption but no SDK test ever drove
+// the send/reply paths against a recipient that publishes an ML-KEM-768 key.
+// `buildSendBody` / `reply` call `fetchRecipientKeys` and pass the recovered
+// `pqEncryption` to `encryptMessage` — when present, `encryptMessage` MUST tag
+// the envelope `hpke-hybrid-v1`; when absent it falls back to `hpke-v1`.
+//
+// The rest of this file stubs `encryptMessage` to a fixed `hpke-v1` fragment,
+// which can never exercise PQ negotiation. So these two blocks restore the REAL
+// `fetchRecipientKeys` + `encryptMessage` (the same `vi.importActual` +
+// `vi.spyOn(core, …).mockImplementation(real.*)` technique C6/rotateKeys use)
+// and assert on the version tag in the POSTed envelope.
+//
+// Reverting the hybrid wiring — dropping the `recipientKeys.pqEncryption`
+// argument passed into `encryptMessage`, or `encryptMessage`'s hybrid branch —
+// flips the asserted `encryption_version` back to `hpke-v1` and fails the test.
+// ===========================================================================
+
+describe("send() — PQ hybrid negotiation (A5, T2 regression)", () => {
+	let configDir: string;
+	beforeEach(() => {
+		configDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-a5-"));
+	});
+	afterEach(() => {
+		delete (CORE_HTTP_STUB as Record<string, unknown>).get;
+		fs.rmSync(configDir, { recursive: true, force: true });
+	});
+
+	it("sends an hpke-hybrid-v1 envelope when the recipient publishes a PQ key", async () => {
+		const real =
+			await vi.importActual<typeof import("@rine-network/core")>(
+				"@rine-network/core",
+			);
+
+		// Sender keys must exist on disk so the real `encryptMessage` can load
+		// and sign with them. SENDER_UUID is what the mocked `resolveAgent`
+		// returns for the default agent header.
+		real.saveAgentKeys(configDir, SENDER_UUID, real.generateAgentKeys());
+
+		// The recipient identity carries a real ML-KEM-768 public key.
+		const recipientKeys = real.generateAgentKeys();
+		if (!recipientKeys.pqEncryption) throw new Error("no recipient PQ key");
+
+		// Restore the real negotiation + seal — the file-level stubs would
+		// otherwise force `hpke-v1` regardless of the recipient's keys.
+		vi.spyOn(core, "fetchRecipientKeys").mockImplementation(
+			real.fetchRecipientKeys,
+		);
+		vi.spyOn(core, "encryptMessage").mockImplementation(real.encryptMessage);
+
+		// `fetchRecipientKeys` hits the rine-core bridge `get('/agents/{id}/keys')`.
+		// Publish the recipient's X25519 + ML-KEM-768 public keys there.
+		(CORE_HTTP_STUB as Record<string, unknown>).get = vi.fn(
+			async (p: string) => {
+				if (p === `/agents/${RECIPIENT_UUID}/keys`) {
+					return {
+						agent_id: RECIPIENT_UUID,
+						signing_public_key: real.signingPublicKeyToJWK(
+							recipientKeys.signing.publicKey,
+						),
+						encryption_public_key: {
+							kty: "OKP",
+							crv: "X25519",
+							x: real.toBase64Url(recipientKeys.encryption.publicKey),
+						},
+						pq_encryption_public_key: real.pqPublicKeyToJWK(
+							recipientKeys.pqEncryption?.publicKey as Uint8Array,
+						),
+					};
+				}
+				throw new Error(`unexpected bridge path: ${p}`);
+			},
+		);
+
+		const { http, calls } = makeHttpStub(
+			{ post: () => sampleMessageRead() },
+			configDir,
+		);
+		const messages = new MessagesResource(http);
+
+		await messages.send("alice@acme.rine.network" as AgentHandle, {
+			text: "quantum-safe hi",
+		});
+
+		const postCall = calls.find((c) => c.method === "POST");
+		expect(postCall?.path).toBe("/messages");
+		const body = postCall?.body as Record<string, unknown>;
+		// The whole point: a PQ-capable recipient negotiates the hybrid version.
+		expect(body.encryption_version).toBe("hpke-hybrid-v1");
+		expect(body.to_agent_id).toBe(RECIPIENT_UUID);
+		expect(typeof body.encrypted_payload).toBe("string");
+	});
+
+	it("falls back to hpke-v1 when the recipient has no PQ key (negative control)", async () => {
+		// This test would ALSO pass against the pre-fix code — it is a boundary
+		// guard proving version is negotiated, not hard-coded.
+		// Same wiring, but the recipient publishes NO `pq_encryption_public_key`.
+		// `encryptMessage` must stay on the classical path — proves the hybrid
+		// version is negotiated from the recipient's key, not hard-coded.
+		const real =
+			await vi.importActual<typeof import("@rine-network/core")>(
+				"@rine-network/core",
+			);
+		real.saveAgentKeys(configDir, SENDER_UUID, real.generateAgentKeys());
+		const recipientKeys = real.generateAgentKeys();
+
+		vi.spyOn(core, "fetchRecipientKeys").mockImplementation(
+			real.fetchRecipientKeys,
+		);
+		vi.spyOn(core, "encryptMessage").mockImplementation(real.encryptMessage);
+
+		(CORE_HTTP_STUB as Record<string, unknown>).get = vi.fn(
+			async (p: string) => {
+				if (p === `/agents/${RECIPIENT_UUID}/keys`) {
+					return {
+						agent_id: RECIPIENT_UUID,
+						signing_public_key: real.signingPublicKeyToJWK(
+							recipientKeys.signing.publicKey,
+						),
+						encryption_public_key: {
+							kty: "OKP",
+							crv: "X25519",
+							x: real.toBase64Url(recipientKeys.encryption.publicKey),
+						},
+						// No pq_encryption_public_key on purpose.
+					};
+				}
+				throw new Error(`unexpected bridge path: ${p}`);
+			},
+		);
+
+		const { http, calls } = makeHttpStub(
+			{ post: () => sampleMessageRead() },
+			configDir,
+		);
+		const messages = new MessagesResource(http);
+
+		await messages.send("alice@acme.rine.network" as AgentHandle, {
+			text: "classical hi",
+		});
+
+		const body = calls.find((c) => c.method === "POST")?.body as Record<
+			string,
+			unknown
+		>;
+		expect(body.encryption_version).toBe("hpke-v1");
+	});
+});
+
+describe("reply() — PQ hybrid negotiation (A6, T2 regression)", () => {
+	let configDir: string;
+	beforeEach(() => {
+		configDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-a6-"));
+	});
+	afterEach(() => {
+		delete (CORE_HTTP_STUB as Record<string, unknown>).get;
+		fs.rmSync(configDir, { recursive: true, force: true });
+	});
+
+	it("encrypts the reply as hpke-hybrid-v1 when the original sender has a PQ key", async () => {
+		const ORIGINAL_MESSAGE_ID = "44444444-4444-4444-8444-444444444444";
+		const real =
+			await vi.importActual<typeof import("@rine-network/core")>(
+				"@rine-network/core",
+			);
+
+		// We (SENDER_UUID) reply to a message Alice (RECIPIENT_UUID) sent us, so
+		// the reply is encrypted TO RECIPIENT_UUID's keys.
+		real.saveAgentKeys(configDir, SENDER_UUID, real.generateAgentKeys());
+		const recipientKeys = real.generateAgentKeys();
+		if (!recipientKeys.pqEncryption) throw new Error("no recipient PQ key");
+
+		vi.spyOn(core, "fetchRecipientKeys").mockImplementation(
+			real.fetchRecipientKeys,
+		);
+		vi.spyOn(core, "encryptMessage").mockImplementation(real.encryptMessage);
+
+		// The bridge `get` serves BOTH the original-message fetch and the
+		// recipient-keys fetch that `reply()` performs.
+		(CORE_HTTP_STUB as Record<string, unknown>).get = vi.fn(
+			async (p: string) => {
+				if (p === `/messages/${ORIGINAL_MESSAGE_ID}`) {
+					return sampleMessageRead({
+						id: ORIGINAL_MESSAGE_ID,
+						from_agent_id: RECIPIENT_UUID, // original sender = reply recipient
+						to_agent_id: SENDER_UUID, // landed in our mailbox
+					});
+				}
+				if (p === `/agents/${RECIPIENT_UUID}/keys`) {
+					return {
+						agent_id: RECIPIENT_UUID,
+						signing_public_key: real.signingPublicKeyToJWK(
+							recipientKeys.signing.publicKey,
+						),
+						encryption_public_key: {
+							kty: "OKP",
+							crv: "X25519",
+							x: real.toBase64Url(recipientKeys.encryption.publicKey),
+						},
+						pq_encryption_public_key: real.pqPublicKeyToJWK(
+							recipientKeys.pqEncryption?.publicKey as Uint8Array,
+						),
+					};
+				}
+				throw new Error(`unexpected bridge path: ${p}`);
+			},
+		);
+
+		const { http, calls } = makeHttpStub(
+			{ post: () => sampleMessageRead({ type: "rine.v1.task_response" }) },
+			configDir,
+		);
+		const messages = new MessagesResource(http);
+
+		await messages.reply(ORIGINAL_MESSAGE_ID as MessageUuid, { text: "ack" });
+
+		const postCall = calls.find((c) => c.method === "POST");
+		expect(postCall?.path).toBe(`/messages/${ORIGINAL_MESSAGE_ID}/reply`);
+		const body = postCall?.body as Record<string, unknown>;
+		expect(body.encryption_version).toBe("hpke-hybrid-v1");
+		expect(typeof body.encrypted_payload).toBe("string");
 	});
 });

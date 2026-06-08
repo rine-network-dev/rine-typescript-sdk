@@ -19,6 +19,7 @@ import {
 import { GroupsResource } from "./resources/groups.js";
 import {
 	IdentityResource,
+	type AddPostQuantumKeyOptions,
 	type CreateAgentOptions,
 	type UpdateAgentPatch,
 	type UpdateOrgPatch,
@@ -230,7 +231,7 @@ export class AsyncRineClient implements AsyncDisposable {
 		this.messagingResource = new MessagesResource(this.http);
 		this.streams = new StreamsResource(this.http);
 		this.polling = new PollingResource(this.http);
-		this.groups = new GroupsResource(this.http);
+		this.groups = new GroupsResource(this.http, this.messagingResource);
 		this.webhooks = new WebhooksResource(this.http);
 		this.discovery = new DiscoveryResource(this.http);
 		this.identity = new IdentityResource(this.http);
@@ -656,6 +657,9 @@ export class AsyncRineClient implements AsyncDisposable {
 	}
 	rotateKeys(agentId: AgentUuid) {
 		return this.identity.rotateKeys(agentId);
+	}
+	addPostQuantumKey(agentId: AgentUuid, opts?: AddPostQuantumKeyOptions) {
+		return this.identity.addPostQuantumKey(agentId, opts);
 	}
 	getAgentCard(agentId: AgentUuid) {
 		return this.identity.getAgentCard(agentId);

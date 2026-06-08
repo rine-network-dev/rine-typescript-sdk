@@ -47,6 +47,7 @@ export type {
 } from "./agent.js";
 
 export type {
+	AddPostQuantumKeyOptions,
 	CreateAgentOptions,
 	UpdateAgentPatch,
 	UpdateOrgPatch,

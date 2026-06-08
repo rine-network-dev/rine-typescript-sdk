@@ -11,12 +11,15 @@ import {
 
 	encryptGroupMessage,
 	encryptMessage,
+	encryptMlsGroupMessage,
 	fetchAgents,
-	fetchRecipientEncryptionKey,
+	fetchRecipientKeys,
 	getOrCreateSenderKey,
 	normalizeHandle,
+	processMlsWelcomes,
 	resolveAgent,
 	resolveToUuid,
+	syncMlsGroup,
 } from "@rine-network/core";
 import { parse, parseCursorPage } from "../api/adapters.js";
 import type { SDKHttpClient } from "../api/http.js";
@@ -30,6 +33,8 @@ import type {
 import {
 	type DecryptedMessage,
 	DecryptedMessageSchema,
+	type GroupRead,
+	GroupReadSchema,
 	type MessageRead,
 	MessageReadSchema,
 	type SendAndWaitResult,
@@ -241,12 +246,13 @@ export class MessagesResource {
 			}
 
 			// 4. Encrypt to the original sender's public encryption key.
-			const recipientPk = await fetchRecipientEncryptionKey(core, recipientId);
+			const recipientKeys = await fetchRecipientKeys(core, recipientId);
 			const encrypted = await encryptMessage(
 				this.http.configDir,
 				senderId,
-				recipientPk,
+				recipientKeys.encryption,
 				payload,
+				recipientKeys.pqEncryption,
 			);
 
 			const body: Record<string, unknown> = {
@@ -390,6 +396,26 @@ export class MessagesResource {
 			base.conversation_metadata = opts.conversationMetadata;
 
 		if (isGroupHandle(target)) {
+			// Resolve the group to inspect its `mls_group_id` latch. Non-null ⇒
+			// the group uses MLS (route through `encryptMlsGroupMessage`); null
+			// ⇒ the existing sender-key path. The rine group UUID (`group.id`)
+			// is the only MLS state key — never the opaque `mls_group_id`.
+			const group = await this.resolveGroup(core, target);
+
+			if (group.mls_group_id !== null) {
+				const result = await this.encryptMlsWithRecovery(
+					core,
+					senderId,
+					group.id,
+					payload,
+				);
+				return {
+					...base,
+					to_handle: target,
+					...result,
+				};
+			}
+
 			// Sender-key path. The rine-core helper carries X-Rine-Agent on its
 			// distribution fan-out so multi-agent orgs route key distributions
 			// through the right mailbox.
@@ -421,18 +447,75 @@ export class MessagesResource {
 		// handles (WebFinger lookup). Raw bare names are not supported here —
 		// the SDK requires a handle or UUID for the recipient.
 		const recipientId = await resolveToUuid(this.http.apiUrl, target);
-		const recipientPk = await fetchRecipientEncryptionKey(core, recipientId);
+		const recipientKeys = await fetchRecipientKeys(core, recipientId);
 		const encrypted = await encryptMessage(
 			this.http.configDir,
 			senderId,
-			recipientPk,
+			recipientKeys.encryption,
 			payload,
+			recipientKeys.pqEncryption,
 		);
 		return {
 			...base,
 			to_agent_id: recipientId,
 			...encrypted,
 		};
+	}
+
+	/**
+	 * Resolve a group handle to its `GroupRead` so the send path can inspect
+	 * the `mls_group_id` latch. Mirrors the server's handle lookup
+	 * (`GET /groups?handle=…`) used by the CLI/MCP group send paths.
+	 */
+	private async resolveGroup(
+		core: CoreHttpClient,
+		handle: string,
+	): Promise<GroupRead> {
+		const raw = await core.get("/groups", { handle });
+		const page = parseCursorPage(GroupReadSchema, raw);
+		const group = page.items[0];
+		if (!group) throw new Error(`Group not found: ${handle}`);
+		return group;
+	}
+
+	/**
+	 * MLS group send with one-shot recovery. If the agent has no local MLS
+	 * state for the group, install pending Welcomes + sync (epoch advance),
+	 * then retry the encrypt once. Mirrors the sender-key auto-recovery in the
+	 * read path. `encryption_version` is `"mls-v1"`, set by core — never
+	 * overridden here.
+	 */
+	private async encryptMlsWithRecovery(
+		core: CoreHttpClient,
+		senderId: string,
+		groupId: string,
+		payload: unknown,
+	): Promise<Awaited<ReturnType<typeof encryptMlsGroupMessage>>> {
+		try {
+			return await encryptMlsGroupMessage(
+				this.http.configDir,
+				senderId,
+				groupId,
+				payload,
+			);
+		} catch (err) {
+			if (
+				err instanceof Error &&
+				err.message.startsWith("No MLS state for group")
+			) {
+				await processMlsWelcomes(this.http.configDir, senderId, core);
+				await syncMlsGroup(this.http.configDir, senderId, groupId, core, {
+					"X-Rine-Agent": senderId,
+				});
+				return await encryptMlsGroupMessage(
+					this.http.configDir,
+					senderId,
+					groupId,
+					payload,
+				);
+			}
+			throw err;
+		}
 	}
 
 	/**

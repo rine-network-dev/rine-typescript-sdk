@@ -196,6 +196,24 @@ describe("GroupsResource", () => {
 		expect(typeof body.name).toBe("string");
 	});
 
+	it("create() defaults visibility to 'private' when no opts are given", async () => {
+		// Bare create('name') must always include visibility on the wire — the
+		// server requires it with no default and returns 422 if absent.
+		const { http, calls } = makeHttpStub(() => sampleGroup());
+		const groups = new GroupsResource(http);
+		await groups.create("bare-group");
+		const body = calls[0]?.body as Record<string, unknown>;
+		expect(body["visibility"]).toBe("private");
+	});
+
+	it("create() preserves an explicit visibility:'public'", async () => {
+		const { http, calls } = makeHttpStub(() => sampleGroup());
+		const groups = new GroupsResource(http);
+		await groups.create("public-group", { visibility: "public" });
+		const body = calls[0]?.body as Record<string, unknown>;
+		expect(body["visibility"]).toBe("public");
+	});
+
 	it("get() GETs /groups/{id}", async () => {
 		const { http, calls } = makeHttpStub(() => sampleGroup());
 		const groups = new GroupsResource(http);

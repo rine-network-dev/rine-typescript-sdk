@@ -44,6 +44,7 @@ export type RineOperation =
 	| "updateAgent"
 	| "revokeAgent"
 	| "rotateKeys"
+	| "addPostQuantumKey"
 	| "regeneratePollToken"
 	| "revokePollToken"
 	| "getQuotas"

@@ -373,6 +373,13 @@ export const GroupReadSchema = z.object({
 	vote_duration_hours: z.number().int().default(72),
 	member_count: z.number().int().default(0),
 	created_at: z.string().datetime(),
+	// MLS group fields. `mls_group_id` is an opaque "MLS-active" latch:
+	// non-null ⇒ the group uses MLS. It is never used as a storage key — the
+	// rine group UUID (`id`) is the only MLS state key.
+	mls_enabled: z.boolean().default(false),
+	mls_group_id: z.string().nullable().default(null),
+	mls_pending: z.boolean().default(false),
+	mls_cipher_suite: z.number().int().nullable().default(null),
 });
 export type GroupRead = z.infer<typeof GroupReadSchema>;
 

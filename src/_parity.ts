@@ -45,6 +45,7 @@ type _ClientSurfaceKeys =
 	| "revokePollToken"
 	| "getQuotas"
 	| "rotateKeys"
+	| "addPostQuantumKey"
 	// Agent cards
 	| "setAgentCard"
 	| "getAgentCard"

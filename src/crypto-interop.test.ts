@@ -48,21 +48,22 @@ import * as path from "node:path";
 import {
 	type AgentKeys,
 	type HttpClient as CoreHttpClient,
+	type SenderKeyState,
 	encryptGroupMessage,
 	encryptMessage,
 	fromBase64Url,
 	generateAgentKeys,
 	generateSenderKey,
+	loadAgentKeys,
 	saveAgentKeys,
 	saveSenderKeyState,
-	type SenderKeyState,
 	signingPublicKeyToJWK,
 	toBase64Url,
 } from "@rine-network/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	decryptEnvelope,
 	type ParsedDecryptedMessage,
+	decryptEnvelope,
 } from "./resources/decrypt.js";
 
 // ---------------------------------------------------------------------------
@@ -199,6 +200,22 @@ afterEach(() => {
 	fs.rmSync(configDir, { recursive: true, force: true });
 });
 
+/**
+ * Recover the recipient's ML-KEM-768 keypair from disk. `generateAgentKeys()`
+ * always mints a PQ key and `saveAgentKeys` persists it, so the hybrid tests
+ * reuse the same recipient identity the rest of the file already set up rather
+ * than minting a throwaway PQ fixture. The public half drives the hybrid seal;
+ * the private half (loaded by `decryptMessage` from `configDir`) drives the
+ * open.
+ */
+function requireRecipientPq(): { publicKey: Uint8Array } {
+	const loaded = loadAgentKeys(configDir, RECIPIENT_ID);
+	if (!loaded.pqEncryption) {
+		throw new Error("expected recipient PQ key to be present on disk");
+	}
+	return loaded.pqEncryption;
+}
+
 // ---------------------------------------------------------------------------
 // DM round-trip.
 // ---------------------------------------------------------------------------
@@ -262,6 +279,107 @@ describe("crypto interop — DM round-trip", () => {
 
 		expect(result.decrypt_error).toBeNull();
 		expect(result.plaintext).toEqual(payload);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// A7 — PQ hybrid DM round-trip (regression for C4).
+//
+// Two audits found 8 bugs in the hybrid read/decrypt path that escaped because
+// no test ever drove an `hpke-hybrid-v1` envelope through `decryptEnvelope`.
+// The headline failure (C4): `decrypt.ts`'s version dispatch only matched
+// `hpke-v1`, so every hybrid envelope fell through to the
+// "unknown encryption_version" branch and came back with
+// `decrypt_error: 'unknown encryption_version: hpke-hybrid-v1'` and NO
+// plaintext. These tests drive a *real* hybrid envelope (produced by
+// `encryptMessage` with the recipient's ML-KEM-768 public key) through the
+// real `decryptEnvelope` and assert the plaintext is recovered and verified.
+//
+// Reverting the 180be82 fix (dropping `|| msg.encryption_version ===
+// "hpke-hybrid-v1"` on line 67 of decrypt.ts) makes both tests fail:
+// `decrypt_error` becomes non-null and `plaintext` becomes undefined.
+// ---------------------------------------------------------------------------
+
+describe("crypto interop — PQ hybrid DM round-trip (C4 regression)", () => {
+	it("SDK decrypts an hpke-hybrid-v1 envelope and recovers the plaintext", async () => {
+		const recipientPq = requireRecipientPq();
+		const payload = { task: "translate", text: "quantum-safe", n: 7 };
+
+		// Hybrid seal: passing the recipient's PQ public key flips
+		// `encryptMessage` into `hpke-hybrid-v1` mode (version byte 0x03).
+		const encrypted = await encryptMessage(
+			configDir,
+			SENDER_ID,
+			recipientKeys.encryption.publicKey,
+			payload,
+			recipientPq.publicKey,
+		);
+		expect(encrypted.encryption_version).toBe("hpke-hybrid-v1");
+
+		const msg = wireMessage("hpke-hybrid-v1", encrypted.encrypted_payload);
+		const result = await decryptEnvelope({
+			core: asCore(makeMockCore(store)),
+			configDir,
+			agentId: RECIPIENT_ID,
+			msg,
+		});
+
+		// Reverting the fix makes `decrypt_error` the unknown-version string and
+		// `plaintext` undefined — both assertions below fail.
+		expect(result.decrypt_error).toBeNull();
+		expect(result.plaintext).toEqual(payload);
+		expect(result.verified).toBe(true);
+		expect(result.verification_status).toBe("verified");
+		expect(result.encryption_version).toBe("hpke-hybrid-v1");
+	});
+
+	it("dispatches an hpke-hybrid-v1 tag to the crypto open path, not the unknown-version branch", async () => {
+		// This test isolates the dispatch *decision* rather than asserting on a
+		// constant. The pre-fix guard matched ONLY `hpke-v1`, so a
+		// `hpke-hybrid-v1` tag fell through to the unknown-version branch and
+		// came back with `decrypt_error: "unknown encryption_version:
+		// hpke-hybrid-v1"` — `decryptMessage` was never reached.
+		//
+		// To prove the fixed dispatch genuinely reaches `decryptMessage` and
+		// tries to OPEN the bytes (rather than short-circuiting on the version
+		// string), we feed it a *real classical* HPKE ciphertext — wire version
+		// byte 0x01, so `decryptMessage` takes the classical `open()` arm — but
+		// with one byte of the AEAD body flipped so the open fails. The result
+		// must be a CRYPTO error, never the unknown-version string:
+		//   - pre-fix  → "unknown encryption_version: hpke-hybrid-v1" (dispatch
+		//                 never reached the crypto layer) → assertion FAILS.
+		//   - post-fix → an AEAD/open error from `decryptMessage` → assertion
+		//                 PASSES, proving dispatch landed on the crypto path.
+		const classical = await encryptMessage(
+			configDir,
+			SENDER_ID,
+			recipientKeys.encryption.publicKey,
+			{ secret: "pq" },
+		);
+		expect(classical.encryption_version).toBe("hpke-v1");
+
+		// Flip a byte in the AEAD body (NOT byte 0 — the 0x01 version prefix
+		// must survive so the classical `open()` arm is selected inside
+		// `decryptMessage`). The tag-covered ciphertext then fails to open.
+		const raw = fromBase64Url(classical.encrypted_payload);
+		const flipIdx = raw.length - 1;
+		raw[flipIdx] = (raw[flipIdx] ?? 0) ^ 0x01;
+		const tamperedB64 = toBase64Url(raw);
+
+		const result = await decryptEnvelope({
+			core: asCore(makeMockCore(store)),
+			configDir,
+			agentId: RECIPIENT_ID,
+			// Tag it `hpke-hybrid-v1` — the dispatch decision under test.
+			msg: wireMessage("hpke-hybrid-v1", tamperedB64),
+		});
+
+		// A non-null crypto error means dispatch reached `decryptMessage`.
+		expect(result.decrypt_error).not.toBeNull();
+		// Crucially NOT the unknown-version short-circuit — that string is the
+		// pre-fix tell, so this assertion is what fails on a revert.
+		expect(result.decrypt_error).not.toContain("unknown encryption_version");
+		expect(result.plaintext).toBeUndefined();
 	});
 });
 
