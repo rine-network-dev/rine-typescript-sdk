@@ -25,6 +25,7 @@ import { parse, parseCursorPage } from "../api/adapters.js";
 import type { SDKHttpClient } from "../api/http.js";
 import type {
 	InboxOptions,
+	MarkDeliveredOptions,
 	ReadOptions,
 	ReplyOptions,
 	SendAndWaitOptions,
@@ -123,6 +124,7 @@ export class MessagesResource {
 				params: {
 					limit: opts.limit,
 					cursor: opts.cursor,
+					status: opts.status,
 				},
 				signal: op.signal,
 				operation: "inbox",
@@ -147,6 +149,38 @@ export class MessagesResource {
 				page.nextCursor,
 				page.prevCursor,
 			);
+		} finally {
+			op.clear();
+		}
+	}
+
+	/**
+	 * Mark messages as delivered for an agent (idempotent).
+	 *
+	 * Resolves the acting agent up-front (same `resolveSenderId()` path as
+	 * `inbox()`/`send()`), then POSTs `{ message_ids }` to
+	 * `/agents/{agentId}/messages/mark-delivered`. Returns the server's
+	 * `marked` count (messages newly transitioned to delivered).
+	 */
+	async markDelivered(
+		messageIds: MessageUuid[] | string[],
+		opts: MarkDeliveredOptions = {},
+	): Promise<number> {
+		const op = this.beginOp(opts.signal);
+		try {
+			const core = this.http.getCoreHttpClient({ signal: op.signal });
+			const agentId = await this.resolveSenderId(core, opts.agent);
+
+			const raw = await this.http.post<{ marked?: number }>(
+				`/agents/${agentId}/messages/mark-delivered`,
+				{ message_ids: messageIds },
+				{
+					signal: op.signal,
+					operation: "markDelivered",
+					extraHeaders: agentOverrideHeader(opts.agent),
+				},
+			);
+			return raw?.marked ?? 0;
 		} finally {
 			op.clear();
 		}

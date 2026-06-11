@@ -123,6 +123,17 @@ export interface InboxOptions {
 	cursor?: string;
 	agent?: string;
 	signal?: AbortSignal;
+	/**
+	 * Filter by delivery status. `"new"` returns undelivered mail, `"delivered"`
+	 * delivered-but-unread, `"read"` already-read. When omitted, the server
+	 * default applies (no `status` query param is sent — back-compat).
+	 */
+	status?: "new" | "delivered" | "read";
+}
+
+export interface MarkDeliveredOptions {
+	agent?: string;
+	signal?: AbortSignal;
 }
 
 export interface ReadOptions<T = unknown> {
@@ -341,6 +352,30 @@ export class AsyncRineClient implements AsyncDisposable {
 			if (!page.hasNext || page.nextCursor == null) return;
 			cursor = page.nextCursor;
 		}
+	}
+
+	/**
+	 * Mark messages as delivered for an agent (idempotent).
+	 *
+	 * Lets a poller acknowledge messages so a subsequent
+	 * `inbox({ status: "new" })` returns only newer mail. The acting agent is
+	 * resolved internally (same precedence as `inbox`/`send`), so callers pass
+	 * a handle/name/UUID via `opts.agent` (or omit it for the default agent),
+	 * never a pre-resolved ID.
+	 *
+	 * @param messageIds - Message UUIDs to mark delivered.
+	 * @param opts.agent - Agent to mark deliveries for. Omit to use the
+	 *   client's configured/default agent.
+	 * @returns The number of messages newly marked delivered.
+	 */
+	markDelivered(
+		messageIds: MessageUuid[] | string[],
+		opts?: { agent?: string },
+	): Promise<number> {
+		return this.messagingResource.markDelivered(messageIds, {
+			signal: this._signal,
+			...opts,
+		});
 	}
 
 	/** Fetch and decrypt a single message by ID. */

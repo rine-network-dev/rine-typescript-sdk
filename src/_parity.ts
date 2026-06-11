@@ -25,6 +25,7 @@ type _ClientSurfaceKeys =
 	// Messaging
 	| "send"
 	| "inbox"
+	| "markDelivered"
 	| "read"
 	| "reply"
 	| "sendAndWait"

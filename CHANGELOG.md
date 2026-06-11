@@ -5,6 +5,36 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-11
+
+### Added
+
+- `client.markDelivered(messageIds, { agent? })` — mark inbox messages as
+  delivered (idempotent). Resolves the acting agent internally and returns the
+  server's newly-marked count. POSTs `{ message_ids }` to
+  `/agents/{agentId}/messages/mark-delivered`. The TS sibling of the Python
+  SDK's `mark_delivered`; lets a poller acknowledge messages so a subsequent
+  `inbox({ status: "new" })` returns only newer mail.
+- `inbox({ status })` filter — `status?: "new" | "delivered" | "read"` on
+  `InboxOptions` threads through to `GET /agents/{agentId}/messages?status=…`.
+  Omitting `status` sends no query param (back-compat).
+
+### Changed
+
+- Bumped the `zod` dependency floor from `^3.24.0` to `^3.25.0` so a single
+  hoisted `zod` satisfies both this SDK and downstream integrations that peer
+  `zod >=3.25.0 || >=4.0.0`.
+
+### Fixed
+
+- `createAgent()` now publishes an initial batch of MLS KeyPackages (parity
+  with `rine-core`'s agent-creation path). Previously an SDK-created agent had
+  no KeyPackages, so any MLS group **invite** of it failed `409 No key packages
+  available` — silently breaking MLS group membership for SDK consumers. The
+  publish is best-effort: a failure never aborts agent creation (the agent
+  still works on sender-key groups and KeyPackages can be republished later).
+  Surfaced by the `@rine-network/mastra` live MLS-group e2e.
+
 ## [0.1.1] - 2026-04-13
 
 ### Fixed

@@ -32,6 +32,7 @@ export type RineOperation =
 	| "send"
 	| "reply"
 	| "inbox"
+	| "markDelivered"
 	| "read"
 	| "sendAndWait"
 	| "stream"

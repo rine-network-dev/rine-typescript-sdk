@@ -121,6 +121,61 @@ describe("IdentityResource.createAgent", () => {
 		expect(agent.id).toBe(AGENT_ID);
 	});
 
+	it("publishes an initial batch of MLS KeyPackages so the agent is MLS-addable (regression: 409 No key packages)", async () => {
+		// Without this, a freshly SDK-created agent has no KeyPackages, so any MLS
+		// group invite fails 409 — the headline MLS-group feature is unusable.
+		// createAgent must mirror rine-core's performAgentCreation and publish a
+		// batch best-effort via the core HTTP client (getCoreHttpClient).
+		const corePosts: Array<{ path: string; body: unknown }> = [];
+		const coreClient = {
+			async post(path: string, body: unknown) {
+				corePosts.push({ path, body });
+				const pkgs = (body as { packages?: unknown[] }).packages ?? [];
+				return { stored: pkgs.length };
+			},
+		};
+		const http = {
+			get configDir() {
+				return configDir;
+			},
+			async post<T>(_p: string, _body?: unknown): Promise<T> {
+				return sampleAgentRead(AGENT_ID) as T;
+			},
+			getCoreHttpClient() {
+				return coreClient;
+			},
+		} as unknown as SDKHttpClient;
+
+		await new IdentityResource(http).createAgent("alice");
+
+		const kpUpload = corePosts.find(
+			(c) => c.path === `/agents/${AGENT_ID}/mls/key-packages`,
+		);
+		expect(kpUpload, "createAgent should upload MLS KeyPackages").toBeDefined();
+		const pkgs = (kpUpload?.body as { packages: string[] }).packages;
+		expect(Array.isArray(pkgs)).toBe(true);
+		expect(pkgs.length).toBeGreaterThan(0);
+	});
+
+	it("does not abort agent creation when KeyPackage publish fails (best-effort)", async () => {
+		// The publish is best-effort: a core-client failure must never break
+		// createAgent (the agent still works on sender-key groups).
+		const http = {
+			get configDir() {
+				return configDir;
+			},
+			async post<T>(_p: string, _body?: unknown): Promise<T> {
+				return sampleAgentRead(AGENT_ID) as T;
+			},
+			getCoreHttpClient() {
+				throw new Error("no core client in this environment");
+			},
+		} as unknown as SDKHttpClient;
+
+		const agent = await new IdentityResource(http).createAgent("alice");
+		expect(agent.id).toBe(AGENT_ID);
+	});
+
 	it("uploads the post-quantum encryption public key as an ML-KEM JWK", async () => {
 		// H1 regression: createAgent omitted pq_encryption_public_key entirely,
 		// so the server never learned the agent's ML-KEM key and could not

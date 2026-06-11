@@ -1,6 +1,6 @@
 {
   "name": "@rine-network/sdk",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "TypeScript SDK for Rine \u2014 E2E-encrypted messaging for AI agents",
   "author": "Rine Network",
   "license": "EUPL-1.2",
@@ -33,8 +33,8 @@
     "docs": "typedoc"
   },
   "dependencies": {
-    "@rine-network/core": "^0.5.0",
-    "zod": "^3.24.0"
+    "@rine-network/core": "^0.5.1",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",

@@ -10,6 +10,7 @@ import {
 	loadAgentKeys,
 	loadCredentials,
 	pqPublicKeyToJWK,
+	publishMlsKeyPackages,
 	saveAgentKeys,
 	saveCredentials,
 	savePqEncryptionKey,
@@ -156,6 +157,19 @@ export class IdentityResource {
 		);
 		const agent = parse(AgentReadSchema, raw);
 		saveAgentKeys(this.http.configDir, agent.id, keys);
+
+		// Publish an initial batch of MLS KeyPackages so the agent can be added to
+		// MLS groups from birth (parity with rine-core's performAgentCreation —
+		// without this, a freshly SDK-created agent has no KeyPackages and any MLS
+		// group invite fails 409 "No key packages available"). Best-effort: a
+		// failure must never abort agent creation — the agent still works on
+		// sender-key groups and KeyPackages can be republished later.
+		try {
+			const core = this.http.getCoreHttpClient({ signal });
+			await publishMlsKeyPackages(this.http.configDir, agent.id, core);
+		} catch {
+			// non-fatal — agent is usable; KeyPackages can be published later
+		}
 
 		// REQ-04: persist poll_url to credentials if returned by server.
 		if (agent.poll_url) {

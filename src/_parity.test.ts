@@ -59,6 +59,7 @@ const REGISTRY: readonly SurfaceEntry[] = [
 	// Messaging
 	{ name: "send", location: "client", minArity: 2 },
 	{ name: "inbox", location: "client", minArity: 0 },
+	{ name: "mark_delivered", location: "client", minArity: 1 },
 	{ name: "read", location: "client", minArity: 1 },
 	{ name: "reply", location: "client", minArity: 2 },
 	{ name: "send_and_wait", location: "client", minArity: 2 },

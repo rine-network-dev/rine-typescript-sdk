@@ -437,6 +437,101 @@ describe("inbox() — per-envelope decryption", () => {
 });
 
 // ===========================================================================
+// T0-2 — inbox({ status }) filter (Track-0)
+// ===========================================================================
+
+describe("inbox({ status }) — status query param (T0-AC-2)", () => {
+	it("adds status=new to the GET messages query when status is provided", async () => {
+		const { http, calls } = makeHttpStub({
+			get: () => sampleInboxPage([]),
+		});
+		const messages = new MessagesResource(http);
+
+		await messages.inbox({ status: "new" });
+
+		const getCall = calls.find((c) => c.method === "GET");
+		expect(getCall?.path).toBe(`/agents/${SENDER_UUID}/messages`);
+		const params = (getCall?.opts as { params: Record<string, unknown> })
+			.params;
+		expect(params.status).toBe("new");
+	});
+
+	it("sends no status param when status is omitted (back-compat)", async () => {
+		const { http, calls } = makeHttpStub({
+			get: () => sampleInboxPage([]),
+		});
+		const messages = new MessagesResource(http);
+
+		await messages.inbox();
+
+		const getCall = calls.find((c) => c.method === "GET");
+		const params = (getCall?.opts as { params: Record<string, unknown> })
+			.params;
+		// `status` resolves to `undefined` and `buildUrl` strips undefined
+		// params before they reach the wire — no `?status=` query is emitted.
+		expect(params.status).toBeUndefined();
+	});
+});
+
+// ===========================================================================
+// T0-1 — markDelivered() route + body (Track-0)
+// ===========================================================================
+
+describe("markDelivered() — route and body (T0-AC-1)", () => {
+	it("POSTs { message_ids } to the agent-scoped mark-delivered route and returns the server count", async () => {
+		const ids = [
+			"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+			"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+		] as MessageUuid[];
+		const { http, calls } = makeHttpStub({
+			post: () => ({ marked: 2 }),
+		});
+		const messages = new MessagesResource(http);
+
+		const marked = await messages.markDelivered(ids, { agent: "me@acme" });
+
+		const postCall = calls.find((c) => c.method === "POST");
+		expect(postCall?.path).toBe(
+			`/agents/${SENDER_UUID}/messages/mark-delivered`,
+		);
+		expect(postCall?.body).toEqual({ message_ids: ids });
+		// Acting agent threads through as the X-Rine-Agent override header.
+		expect(
+			(postCall?.opts as { extraHeaders?: Record<string, string> })
+				.extraHeaders,
+		).toMatchObject({ "X-Rine-Agent": "me@acme" });
+		expect(marked).toBe(2);
+	});
+
+	it("is idempotent — re-marking already-delivered ids returns 0 newly-marked", async () => {
+		const ids = ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"] as MessageUuid[];
+		// Server returns the count of messages it *newly* transitioned; a second
+		// call over the same ids transitions nothing.
+		const { http } = makeHttpStub({
+			post: () => ({ marked: 0 }),
+		});
+		const messages = new MessagesResource(http);
+
+		const marked = await messages.markDelivered(ids);
+
+		expect(marked).toBe(0);
+	});
+
+	it("defaults a missing `marked` field to 0", async () => {
+		const { http } = makeHttpStub({
+			post: () => ({}),
+		});
+		const messages = new MessagesResource(http);
+
+		const marked = await messages.markDelivered([
+			"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+		] as MessageUuid[]);
+
+		expect(marked).toBe(0);
+	});
+});
+
+// ===========================================================================
 // C3 — read() decryption
 // ===========================================================================
 
