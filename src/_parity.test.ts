@@ -106,6 +106,7 @@ const REGISTRY: readonly SurfaceEntry[] = [
 	{ name: "delete", location: "groups", minArity: 1 },
 	{ name: "remove_member", location: "groups", minArity: 2 },
 	{ name: "list_requests", location: "groups", minArity: 1 },
+	{ name: "list_invites", location: "groups", minArity: 0 },
 	{ name: "vote", location: "groups", minArity: 3 },
 
 	// Webhooks — methods on client.webhooks.*

@@ -301,6 +301,41 @@ describe("GroupsResource", () => {
 		expect(list).toEqual([]);
 	});
 
+	it("listInvites() GETs the agent-scoped /groups/invites and returns items[]", async () => {
+		const { http, calls } = makeHttpStub(() => ({ items: [], total: 0 }));
+		const groups = new GroupsResource(http);
+		const list = await groups.listInvites();
+		// Agent-scoped literal route — NOT /groups/{id}/... so the server's
+		// dynamic /{group_id} route never shadows it.
+		expect(calls[0]?.path).toBe("/groups/invites");
+		expect(list).toEqual([]);
+	});
+
+	it("listInvites() surfaces the enriched group_handle/group_name fields", async () => {
+		const { http } = makeHttpStub(() => ({
+			items: [
+				{
+					id: "66666666-6666-4666-8666-666666666666",
+					group_id: GROUP_ID,
+					agent_id: AGENT_ID,
+					invited_by: "77777777-7777-4777-8777-777777777777",
+					message: "join us",
+					status: "invited",
+					created_at: "2026-06-13T12:00:00Z",
+					group_handle: "#dev@acme.rine.network",
+					group_name: "dev",
+				},
+			],
+			total: 1,
+		}));
+		const groups = new GroupsResource(http);
+		const list = await groups.listInvites();
+		expect(list).toHaveLength(1);
+		expect(list[0]?.group_handle).toBe("#dev@acme.rine.network");
+		expect(list[0]?.group_name).toBe("dev");
+		expect(list[0]?.status).toBe("invited");
+	});
+
 	it("vote() POSTs /groups/{id}/requests/{requestId}/vote", async () => {
 		const REQ_ID = "55555555-5555-4555-8555-555555555555";
 		const { http, calls } = makeHttpStub(() => ({

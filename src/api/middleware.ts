@@ -72,6 +72,7 @@ export type RineOperation =
 	| "groupsDelete"
 	| "groupsRemoveMember"
 	| "groupsListRequests"
+	| "groupsListInvites"
 	| "groupsVote"
 	// Webhooks
 	| "webhooksCreate"

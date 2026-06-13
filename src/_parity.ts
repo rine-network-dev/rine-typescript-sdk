@@ -73,6 +73,7 @@ type _GroupsSurfaceKeys =
 	| "delete"
 	| "removeMember"
 	| "listRequests"
+	| "listInvites"
 	| "vote";
 
 // ---------------------------------------------------------------------------

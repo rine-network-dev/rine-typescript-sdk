@@ -13,6 +13,7 @@ import {
 	initMlsGroup,
 	loadMlsState,
 	processMlsWelcomes,
+	sendGroupInviteNotification,
 } from "@rine-network/core";
 import { parse, parseCursorPage } from "../api/adapters.js";
 import type { SDKHttpClient } from "../api/http.js";
@@ -333,10 +334,54 @@ export class GroupsResource {
 
 		// For MLS-active groups, add the invitee now so a Welcome is waiting
 		// when they accept via join. Best-effort, acting as the inviting admin.
+		// The typed `rine.v1.group_invite` notification follows so the invitee's
+		// inbox/poll/SSE path alerts them; `GET /groups/invites` is the
+		// authoritative discovery path either way. Both hooks share the
+		// configDir+messages gate (no local keys ⇒ nothing to seal/sign).
 		if (this.http.configDir && this.messages) {
 			await this.addMemberToMls(groupId, agentId, opts?.signal);
+			await this.sendInviteNotification(
+				groupId,
+				agentId,
+				opts?.message ?? null,
+				opts?.signal,
+			);
 		}
 		return result;
+	}
+
+	/**
+	 * Best-effort: seal a `rine.v1.group_invite` DM to the invitee so their
+	 * normal inbox/poll/SSE path surfaces the invite. Acts as the inviting
+	 * agent (resolved the same way as the MLS hooks). Non-fatal — a failure
+	 * (e.g. the invitee's `groups_only` policy 403s the DM, or missing keys)
+	 * warns and leaves the invite intact; the authoritative `GET /groups/invites`
+	 * pull is unaffected.
+	 */
+	private async sendInviteNotification(
+		groupId: GroupUuid,
+		inviteeAgentId: AgentUuid,
+		message: string | null,
+		signal: AbortSignal | undefined,
+	): Promise<void> {
+		try {
+			if (!this.messages) return;
+			const group = await this.get(groupId);
+			const core = this.http.getCoreHttpClient({ signal });
+			const inviterId = await this.messages.resolveSenderId(core, undefined);
+			await sendGroupInviteNotification(
+				core,
+				this.http.configDir,
+				inviterId,
+				inviteeAgentId,
+				{ group_id: groupId, group_handle: group.handle, message },
+			);
+		} catch (err) {
+			const reason = err instanceof Error ? err.message : String(err);
+			console.warn(
+				`Group-invite notification for group ${groupId} failed (invite still succeeded; the invitee can discover it via groups.listInvites()): ${reason}`,
+			);
+		}
 	}
 
 	/**
@@ -371,6 +416,23 @@ export class GroupsResource {
 	async listRequests(groupId: GroupUuid): Promise<readonly JoinRequestRead[]> {
 		const raw = await this.http.get<unknown>(`/groups/${groupId}/requests`, {
 			operation: "groupsListRequests",
+		});
+		const page = parseCursorPage(JoinRequestReadSchema, raw);
+		return page.items;
+	}
+
+	/**
+	 * List the calling agent's open group invites (vouchers with
+	 * `status="invited"`), enriched with each group's handle/name.
+	 *
+	 * Route: `GET /groups/invites` — agent-scoped, no group-id arg. This is the
+	 * authoritative discovery surface for an invitee (the inviter also sends a
+	 * best-effort `rine.v1.group_invite` notification that lands in the normal
+	 * inbox). Returns the invites as a plain array.
+	 */
+	async listInvites(): Promise<readonly JoinRequestRead[]> {
+		const raw = await this.http.get<unknown>("/groups/invites", {
+			operation: "groupsListInvites",
 		});
 		const page = parseCursorPage(JoinRequestReadSchema, raw);
 		return page.items;

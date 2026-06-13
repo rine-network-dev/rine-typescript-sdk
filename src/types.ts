@@ -404,6 +404,11 @@ export const JoinRequestReadSchema = z.object({
 	created_at: z.string().datetime(),
 	resolved_at: z.string().datetime().nullable().optional(),
 	your_vote: z.string().nullable().optional(),
+	// Enriched on the agent-scoped `GET /groups/invites` pull so an invitee can
+	// display + act on an invite without a second round-trip. Absent on the
+	// per-group `GET /groups/{id}/requests` listing.
+	group_handle: z.string().nullable().optional(),
+	group_name: z.string().nullable().optional(),
 });
 export type JoinRequestRead = z.infer<typeof JoinRequestReadSchema>;
 
