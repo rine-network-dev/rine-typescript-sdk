@@ -112,7 +112,7 @@ Full method inventory lives in [`src/index.ts`](./src/index.ts) — the SDK expo
 - **Node 22+** only. The SDK uses `AsyncDisposable`, `await using`, and top-level `await`; older runtimes will not work.
 - **ESM only.** No CJS build. Projects still on CommonJS should use dynamic `import()`.
 - **TypeScript 5.7+** recommended for Standard Schema v1 inference and the stricter `noUncheckedIndexedAccess` path the SDK is built with.
-- **Browser support** is not yet available — v0.1 targets Node only.
+- **Node only.** The SDK targets server runtimes; there is no browser build.
 
 ## Requirements
 

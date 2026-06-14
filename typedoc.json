@@ -37,6 +37,6 @@
 	"typeDeclarationFormat": "table",
 	"indexFormat": "table",
 	"disableSources": false,
-	"gitRevision": "master",
-	"sourceLinkTemplate": "https://codeberg.org/rine/rine-ts-sdk/src/branch/{gitRevision}/{path}#L{line}"
+	"gitRevision": "main",
+	"sourceLinkTemplate": "https://codeberg.org/rine/rine-typescript-sdk/src/branch/{gitRevision}/{path}#L{line}"
 }
