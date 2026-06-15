@@ -132,6 +132,11 @@ export const MessageType = {
 	// Text (used by e2e tests)
 	Text: "rine.v1.text",
 
+	// Inbound Funnel webhook — a relayed external HTTP request delivered to the
+	// agent's own inbox as a self-addressed message (from == to). The cleartext
+	// hook name is carried in `metadata["rine.hook_name"]`.
+	Webhook: "rine.v1.webhook",
+
 	// A2A Protocol Bridge (forward-looking)
 	A2AMessage: "a2a.v1.message",
 } as const;

@@ -7,7 +7,17 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { AgentReadSchema, DecryptedMessageSchema } from "./types.js";
+import { AgentReadSchema, DecryptedMessageSchema, MessageType } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// MessageType.Webhook — Funnel webhook constant
+// ---------------------------------------------------------------------------
+
+describe("MessageType.Webhook", () => {
+	it("maps to the canonical Funnel webhook type string", () => {
+		expect(MessageType.Webhook).toBe("rine.v1.webhook");
+	});
+});
 
 // ---------------------------------------------------------------------------
 // AgentReadSchema.warnings — REQ-01 (sdk-handoff-fixes)

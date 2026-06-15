@@ -5,6 +5,17 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.2] - 2026-06-14
+
+### Added
+
+- `MessageType.Webhook` (`"rine.v1.webhook"`) — the named constant for inbound
+  Funnel webhook messages. A relayed external HTTP request arrives in the
+  agent's own inbox as a self-addressed message (`from == to`) with the
+  cleartext hook name in `metadata["rine.hook_name"]`. Receiving already worked
+  (`MessageRead.type` is an open string); this lets consumers filter on the
+  constant instead of a literal.
+
 ## [0.3.0] - 2026-06-11
 
 ### Added
