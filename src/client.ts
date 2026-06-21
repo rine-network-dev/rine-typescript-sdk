@@ -12,23 +12,24 @@ import {
 	decryptEnvelope,
 } from "./resources/decrypt.js";
 import {
-	DiscoveryResource,
-	type DiscoveryFilters,
 	type DiscoverGroupsOptions,
+	type DiscoveryFilters,
+	DiscoveryResource,
 } from "./resources/discovery.js";
 import { GroupsResource } from "./resources/groups.js";
 import {
-	IdentityResource,
 	type AddPostQuantumKeyOptions,
+	type AgentCardInput,
 	type CreateAgentOptions,
+	type EraseOrgOptions,
+	IdentityResource,
 	type UpdateAgentPatch,
 	type UpdateOrgPatch,
-	type EraseOrgOptions,
-	type AgentCardInput,
 } from "./resources/identity.js";
 import { MessagesResource } from "./resources/messages.js";
 import { PollingResource } from "./resources/polling.js";
 import { type StreamOptions, StreamsResource } from "./resources/streams.js";
+import { type FetchThreadOptions, fetchThread } from "./resources/thread.js";
 import { WebhooksResource } from "./resources/webhooks.js";
 import {
 	type AgentHandle,
@@ -38,11 +39,12 @@ import {
 	type GroupHandle,
 	type GroupUuid,
 	type MessageRead,
-	type MessageUuid,
 	type MessageTypeString,
+	type MessageUuid,
 	RESERVED_MESSAGE_TYPES,
 	type RineEvent,
 	type SendAndWaitResult,
+	type ThreadEntry,
 } from "./types.js";
 import { parseMessagePlaintext, validateOutbound } from "./utils/schema.js";
 import { SeenIds } from "./utils/seen-ids.js";
@@ -498,7 +500,10 @@ export class AsyncRineClient implements AsyncDisposable {
 		// to load the right local keys, and passed as `agent` down to the
 		// underlying SSE stream so `/agents/{id}/stream` scopes server-side.
 		const core = this.http.getCoreHttpClient({ signal });
-		const agentId = await this.messagingResource.resolveSenderId(core, opts.agent);
+		const agentId = await this.messagingResource.resolveSenderId(
+			core,
+			opts.agent,
+		);
 
 		const filterTypes = normalizeTypeFilter(opts.type);
 
@@ -604,6 +609,45 @@ export class AsyncRineClient implements AsyncDisposable {
 		);
 	}
 
+	/**
+	 * Fetch the both-sided, role-tagged transcript of a conversation
+	 * (REQ-SDK-TS-02). Each row is decrypted with the caller's OWN keys —
+	 * the self-sealed copy for messages this agent sent, the recipient copy
+	 * for messages it received, the group cache for group rows. Undecryptable
+	 * rows (a legacy sent message with no self-blob, or a decrypt failure)
+	 * render as `"[unavailable]"` and never throw.
+	 *
+	 * Exposed via `client.conversation(id).thread()`; this method carries the
+	 * client-internal plumbing (agent resolution + http) so `ConversationScope`
+	 * stays a thin delegator, mirroring how `send`/`inbox` route through the
+	 * client.
+	 */
+	async thread(
+		conversationId: string,
+		opts?: { agent?: string; limit?: number; signal?: AbortSignal },
+	): Promise<ThreadEntry[]> {
+		const signal = opts?.signal ?? this._signal;
+		const core = this.http.getCoreHttpClient({ signal });
+		// Honor the agent override so a non-default agent in a multi-agent org
+		// can read its own thread (the self-sealed `direction:"sent"` blob is
+		// sealed to one specific agent's key — picking the reader is load-bearing
+		// for that decrypt). Mirrors `inbox`/`read`/Python `thread(agent=...)`.
+		const agentId = await this.messagingResource.resolveSenderId(
+			core,
+			opts?.agent,
+		);
+		const fetchOpts: FetchThreadOptions = {
+			http: this.http,
+			core,
+			agentId,
+			conversationId,
+			...(opts?.agent !== undefined ? { agent: opts.agent } : {}),
+			...(opts?.limit !== undefined ? { limit: opts.limit } : {}),
+			...(signal !== undefined ? { signal } : {}),
+		};
+		return fetchThread(fetchOpts);
+	}
+
 	// -------------------------------------------------------------------------
 	// Async delivery
 	// -------------------------------------------------------------------------
@@ -627,7 +671,11 @@ export class AsyncRineClient implements AsyncDisposable {
 		handler: (msg: M) => Promise<void> | void,
 		opts?: WatchOptions,
 	): Promise<() => void> {
-		const { signal, pollInterval = 5_000, onError } = {
+		const {
+			signal,
+			pollInterval = 5_000,
+			onError,
+		} = {
 			signal: this._signal,
 			...opts,
 		};

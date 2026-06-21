@@ -293,6 +293,8 @@ export const MessageReadSchema = z.object({
 	recipient_handle: z.string().nullable().optional(),
 	type: z.string(),
 	encrypted_payload: z.string(),
+	self_encrypted_payload: z.string().nullable().optional(),
+	direction: z.enum(["sent", "received"]).optional(),
 	encryption_version: z.string(),
 	sender_signing_kid: z.string().nullable().optional(),
 	content_type: z.string().nullable().optional(),
@@ -306,12 +308,32 @@ export const MessageReadSchema = z.object({
 });
 export type MessageRead = z.infer<typeof MessageReadSchema>;
 
+/**
+ * Both-sided conversation thread page returned by
+ * `GET /conversations/{id}/messages` (REQ-SRV-04). The server emits
+ * `{ messages, truncated }` (ascending, oldest→newest) — NOT a cursor page —
+ * so this is parsed directly rather than through `parseCursorPage`.
+ */
+export const ConversationMessagesPageSchema = z.object({
+	messages: z.array(MessageReadSchema),
+	truncated: z.boolean().default(false),
+});
+export type ConversationMessagesPage = z.infer<
+	typeof ConversationMessagesPageSchema
+>;
+
+/** Sender-signature verification outcome carried on a decrypted message. */
+export const VerificationStatusSchema = z.enum([
+	"verified",
+	"invalid",
+	"unverifiable",
+]);
+export type VerificationStatus = z.infer<typeof VerificationStatusSchema>;
+
 export const DecryptedMessageSchema = MessageReadSchema.extend({
 	plaintext: z.unknown().nullable().optional(),
 	verified: z.boolean().default(false),
-	verification_status: z
-		.enum(["verified", "invalid", "unverifiable"])
-		.default("unverifiable"),
+	verification_status: VerificationStatusSchema.default("unverifiable"),
 	decrypt_error: z.string().nullable().optional(),
 });
 
@@ -338,6 +360,32 @@ export type DecryptedMessage<T = unknown> = Omit<
 > & {
 	plaintext?: T | null;
 };
+
+/**
+ * One rendered turn in a conversation thread, as returned by
+ * `client.conversation(id).thread()`.
+ *
+ * `text` is the decoded, human-readable message body (the `{text}` payload
+ * shape connectors use is unwrapped to its string; any other plaintext is
+ * stringified) or `"[unavailable]"` for a row the caller cannot decrypt (a
+ * legacy sent message with no self-blob, or a decrypt failure). The same shape
+ * is mirrored by the Python SDK's `ThreadEntry` so every surface renders the
+ * transcript identically. Entries are ordered oldest→newest.
+ *
+ * `verificationStatus` reports the sender-signature outcome for the row. A
+ * received turn whose signature is `"invalid"` is fail-closed to `text:
+ * "[unavailable]"` (a forged/tampered turn never renders as trusted content),
+ * so downstream consumers that inject the transcript into a model's context
+ * can also mark or exclude `"unverifiable"` turns.
+ */
+export interface ThreadEntry {
+	direction: "sent" | "received";
+	senderHandle: string | null;
+	text: string;
+	verificationStatus: VerificationStatus;
+	type: string;
+	createdAt: string;
+}
 
 /**
  * Wire-format Zod schema for `{ sent, reply }` — retained for symmetry with

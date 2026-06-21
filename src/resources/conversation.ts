@@ -50,6 +50,7 @@ import {
 	type GroupUuid,
 	type MessageRead,
 	type MessageUuid,
+	type ThreadEntry,
 	isAgentHandle,
 	isGroupHandle,
 } from "../types.js";
@@ -215,6 +216,25 @@ export class ConversationScope {
 		opts: ConversationHistoryOptions<T> = {},
 	): AsyncIterable<DecryptedMessage<T>> {
 		return this.historyGenerator(opts);
+	}
+
+	/**
+	 * Fetch the both-sided, role-tagged transcript of this conversation
+	 * (REQ-SDK-TS-02) via `GET /conversations/{id}/messages`.
+	 *
+	 * Unlike `history()` (a received-only inbox page-walk), `thread()` returns
+	 * the agent's SENT turns too — each decrypted with the caller's own keys
+	 * (the self-sealed copy for sent rows, the recipient copy for received
+	 * rows, the group cache for group rows). Returns a single bounded fetch
+	 * (`limit`, default server-side 50) ordered oldest→newest. A row the caller
+	 * cannot decrypt (a legacy sent message with no self-blob, or a decrypt
+	 * failure) renders `text: "[unavailable]"` — `thread()` never throws on a
+	 * single bad row.
+	 */
+	thread(
+		opts: { agent?: string; limit?: number; signal?: AbortSignal } = {},
+	): Promise<ThreadEntry[]> {
+		return this.client.thread(this.id, opts);
 	}
 
 	private async *messagesGenerator<T>(

@@ -133,6 +133,8 @@ export {
 	type MessageRead,
 	type DecryptedMessage,
 	type SendAndWaitResult,
+	type ThreadEntry,
+	type VerificationStatus,
 	type ErasureResult,
 	type KnownMessageType,
 	type MessageTypeString,

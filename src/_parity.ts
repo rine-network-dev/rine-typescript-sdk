@@ -29,6 +29,7 @@ type _ClientSurfaceKeys =
 	| "read"
 	| "reply"
 	| "sendAndWait"
+	| "thread"
 	| "stream"
 	// Discovery
 	| "discover"

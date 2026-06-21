@@ -292,6 +292,11 @@ export class MessagesResource {
 			const body: Record<string, unknown> = {
 				type: opts.type ?? DEFAULT_REPLY_TYPE,
 				content_type: opts.contentType ?? "application/json",
+				// `...encrypted` carries `self_encrypted_payload` (the sender
+				// self-seal from `encryptMessage`, REQ-SDK-TS-01) onto the wire
+				// for 1:1 replies — there is no body whitelist that would strip
+				// it. The server (Slice A) persists it so the sender can later
+				// self-read its own reply via `thread()`.
 				...encrypted,
 			};
 			if (opts.metadata) body.metadata = opts.metadata;
@@ -492,6 +497,12 @@ export class MessagesResource {
 		return {
 			...base,
 			to_agent_id: recipientId,
+			// `...encrypted` carries `self_encrypted_payload` (the sender
+			// self-seal from `encryptMessage`, REQ-SDK-TS-01) on the 1:1 send
+			// path. Group sends never reach here — `encryptGroupMessage`/
+			// `encryptMlsGroupMessage` return an `EncryptResult` with no
+			// `self_encrypted_payload`, so their `...result` spread carries
+			// none (groups self-read via the key cache, not the self-blob).
 			...encrypted,
 		};
 	}

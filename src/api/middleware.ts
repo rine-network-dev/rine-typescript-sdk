@@ -35,6 +35,7 @@ export type RineOperation =
 	| "markDelivered"
 	| "read"
 	| "sendAndWait"
+	| "thread"
 	| "stream"
 	| "poll"
 	// Identity
