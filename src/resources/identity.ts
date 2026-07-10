@@ -7,6 +7,7 @@ import {
 	encryptionPublicKeyToJWK,
 	generateAgentKeys,
 	generatePqKeyPair,
+	hasSpiffeEndpoint,
 	loadAgentKeys,
 	loadCredentials,
 	pqPublicKeyToJWK,
@@ -15,7 +16,9 @@ import {
 	saveCredentials,
 	savePqEncryptionKey,
 	signingPublicKeyToJWK,
+	verifyIdentitySpiffe,
 } from "@rine-network/core";
+import type { VerifyIdentityResult } from "@rine-network/core";
 import { parse, parseCursorPage } from "../api/adapters.js";
 import type { SDKHttpClient } from "../api/http.js";
 import { RineError } from "../errors.js";
@@ -28,7 +31,7 @@ import {
 	PollTokenResponseSchema,
 	WhoAmISchema,
 } from "../types.js";
-import type { AgentUuid, ErasureResult, OrgRead } from "../types.js";
+import type { AgentRead, AgentUuid, ErasureResult, OrgRead } from "../types.js";
 
 // ---------------------------------------------------------------------------
 // Option types
@@ -38,7 +41,40 @@ export interface CreateAgentOptions {
 	human_oversight?: boolean;
 	unlisted?: boolean;
 	signal?: AbortSignal;
+	/**
+	 * Prove control of a SPIFFE identity for the new agent immediately after
+	 * creation (elevating the org to trust tier 2). Verification also runs
+	 * automatically when a `svid` is supplied or a SPIFFE Workload API endpoint
+	 * is detected. A verification failure never undoes agent creation — the
+	 * error is surfaced on `CreateAgentResult.identityError` instead.
+	 */
+	verifyIdentity?: boolean;
+	/** Caller-supplied SPIFFE JWT-SVID for the auto-verify step. */
+	svid?: string;
 }
+
+export interface VerifyIdentityOptions {
+	/**
+	 * A caller-supplied SPIFFE JWT-SVID (compact JWS) whose `aud` matches the
+	 * server-minted challenge audience. When absent and no SPIFFE Workload API
+	 * endpoint is available, `SpiffeVerificationError` is thrown (never a silent
+	 * no-op).
+	 */
+	svid?: string;
+	/** Sink for human-readable diagnostics. */
+	log?: (message: string) => void;
+	signal?: AbortSignal;
+}
+
+/**
+ * Result of {@link IdentityResource.createAgent}: the created agent plus, when
+ * verification ran, either the typed identity result or the failure message.
+ * Verification failure never undoes creation.
+ */
+export type CreateAgentResult = AgentRead & {
+	identity?: VerifyIdentityResult;
+	identityError?: string;
+};
 
 export interface RotateKeysOptions {
 	signal?: AbortSignal;
@@ -133,8 +169,11 @@ export class IdentityResource {
 	 * server-side agent exists but the caller has no private keys — surfaced
 	 * as the raw I/O error. Callers must treat this as a partial failure.
 	 */
-	async createAgent(name: string, opts?: CreateAgentOptions) {
-		const { signal, ...body } = opts ?? {};
+	async createAgent(
+		name: string,
+		opts?: CreateAgentOptions,
+	): Promise<CreateAgentResult> {
+		const { signal, verifyIdentity, svid, ...body } = opts ?? {};
 		requireConfigDir(this.http.configDir, "createAgent");
 		const keys = generateAgentKeys();
 		const agentBody: Record<string, unknown> = {
@@ -183,7 +222,56 @@ export class IdentityResource {
 				// Non-fatal — mirrors rine-core's performAgentCreation.
 			}
 		}
+
+		// Auto-verify hook (parity with rine-core's performAgentCreation): run
+		// SPIFFE verification when explicitly requested, when a SVID is supplied,
+		// or when a Workload API endpoint is present. A verification failure must
+		// never undo the already-created agent — capture it in `identityError`.
+		if (verifyIdentity || svid || hasSpiffeEndpoint()) {
+			try {
+				const identity = await this.verifyIdentity(agent.id as AgentUuid, {
+					svid,
+					signal,
+				});
+				return { ...agent, identity };
+			} catch (err) {
+				return {
+					...agent,
+					identityError: err instanceof Error ? err.message : String(err),
+				};
+			}
+		}
 		return agent;
+	}
+
+	/**
+	 * Prove control of a SPIFFE identity for `agentId`, elevating the org to
+	 * trust tier 2. Delegates the challenge → SVID → verify orchestration to
+	 * rine-core's `verifyIdentitySpiffe`; this method only bridges the SDK HTTP
+	 * client and pins the telemetry `operation` label.
+	 *
+	 * Throws `SpiffeVerificationError` (re-exported from `@rine-network/core`)
+	 * when no SVID can be obtained — never a silent no-op — and propagates the
+	 * typed `RineApiError` hierarchy for server 4xx/5xx responses.
+	 *
+	 * Route: `POST /agents/{id}/verify-svid/challenge` then
+	 * `POST /agents/{id}/verify-svid`.
+	 */
+	async verifyIdentity(
+		agentId: AgentUuid,
+		opts?: VerifyIdentityOptions,
+	): Promise<VerifyIdentityResult> {
+		return verifyIdentitySpiffe(
+			{
+				post: (path, requestBody) =>
+					this.http.post<unknown>(path, requestBody, {
+						signal: opts?.signal,
+						operation: "verifyIdentity",
+					}),
+			},
+			agentId,
+			{ svid: opts?.svid, log: opts?.log },
+		);
 	}
 
 	async listAgents(opts?: { includeRevoked?: boolean }) {

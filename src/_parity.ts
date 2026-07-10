@@ -48,6 +48,7 @@ type _ClientSurfaceKeys =
 	| "getQuotas"
 	| "rotateKeys"
 	| "addPostQuantumKey"
+	| "verifyIdentity"
 	// Agent cards
 	| "setAgentCard"
 	| "getAgentCard"

@@ -49,11 +49,17 @@ export type {
 export type {
 	AddPostQuantumKeyOptions,
 	CreateAgentOptions,
+	CreateAgentResult,
+	VerifyIdentityOptions,
 	UpdateAgentPatch,
 	UpdateOrgPatch,
 	EraseOrgOptions,
 	AgentCardInput,
 } from "./resources/identity.js";
+// SPIFFE identity verification result + client-side error, re-exported from
+// rine-core so SDK callers can type results and `instanceof`-branch failures.
+export type { VerifyIdentityResult } from "@rine-network/core";
+export { SpiffeVerificationError } from "@rine-network/core";
 export type {
 	DiscoveryFilters,
 	DiscoverGroupsOptions,

@@ -25,6 +25,7 @@ import {
 	IdentityResource,
 	type UpdateAgentPatch,
 	type UpdateOrgPatch,
+	type VerifyIdentityOptions,
 } from "./resources/identity.js";
 import { MessagesResource } from "./resources/messages.js";
 import { PollingResource } from "./resources/polling.js";
@@ -740,6 +741,10 @@ export class AsyncRineClient implements AsyncDisposable {
 	}
 	rotateKeys(agentId: AgentUuid) {
 		return this.identity.rotateKeys(agentId);
+	}
+	/** Prove control of a SPIFFE identity for an agent (→ org trust tier 2). */
+	verifyIdentity(agentId: AgentUuid, opts?: VerifyIdentityOptions) {
+		return this.identity.verifyIdentity(agentId, opts);
 	}
 	addPostQuantumKey(agentId: AgentUuid, opts?: AddPostQuantumKeyOptions) {
 		return this.identity.addPostQuantumKey(agentId, opts);
