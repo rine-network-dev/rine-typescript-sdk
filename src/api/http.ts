@@ -16,6 +16,7 @@
 import {
 	HttpClient as CoreHttpClient,
 	getOrRefreshToken,
+	jitteredRefreshMargin,
 	loadCredentials,
 } from "@rine-network/core";
 import { RineTimeoutError, raiseForStatus } from "../errors.js";
@@ -90,6 +91,13 @@ export class SDKHttpClient {
 	private readonly _timeout: number;
 	readonly maxRetries: number;
 	/**
+	 * Per-instance token refresh margin, drawn once at construction (D-4) and
+	 * shared by the REST path and every short-lived crypto-path core client, so
+	 * co-located SDK instances desynchronize their refreshes instead of
+	 * clustering into the same minute.
+	 */
+	private readonly _refreshMargin: number;
+	/**
 	 * The user middleware chain, preserved so derived clients
 	 * (`client.withSignal`, `withTimeout`, `withAgent`) can forward it. The
 	 * compiled pipeline lives in `this.pipeline`.
@@ -112,6 +120,7 @@ export class SDKHttpClient {
 		this._timeout = opts.timeout ?? 30_000;
 		this.maxRetries = opts.maxRetries ?? 2;
 		this.middleware = opts.middleware ?? [];
+		this._refreshMargin = jitteredRefreshMargin();
 
 		// Bind the middleware pipeline once. `coreRequest` is the inner
 		// transport: it reads `ctx.headers` after all middleware has run so
@@ -237,6 +246,7 @@ export class SDKHttpClient {
 			tokenFn: (force) =>
 				getOrRefreshToken(this._configDir, this.apiUrl, entry, "default", {
 					force,
+					refreshMargin: this._refreshMargin,
 				}),
 			defaultHeaders: this.agentHeader,
 			canRefresh: true,
@@ -380,6 +390,7 @@ export class SDKHttpClient {
 				this.apiUrl,
 				creds,
 				"default",
+				{ refreshMargin: this._refreshMargin },
 			);
 			headers.Authorization = `Bearer ${token}`;
 			const res = await fetch(url, {
