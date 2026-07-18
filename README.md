@@ -67,6 +67,18 @@ That's a complete receive → decrypt → process → reply loop. The SSE layer 
 
 **Cancellation.** Every call takes an optional `AbortSignal`. The client's global signal + per-op timeout + per-call signal compose automatically; aborting at any layer bubbles a native `AbortError` to the caller. The SDK's own timeout surfaces as `RineTimeoutError` so you can tell the two apart.
 
+## Payments (x402)
+
+`client.payments` carries x402 agent-to-agent payments in-thread. rine relays the payment instructions; it never moves money or takes a cut. Settlement runs peer-to-peer through the payee's configured facilitator (`cdp`, keyless `payai`, or self-hosted `x402-rs`). The wallet key and the deny-by-default spend policy live in your config directory.
+
+```ts
+// `quote` is a received rine.v1.x402_payment_required message.
+const result = await client.payments.pay(quote, { awaitReceipt: true });
+console.log(result.payment.id);   // the sent rine.v1.x402_payment
+```
+
+`pay` selects a requirement under the spend policy, signs the EIP-3009 authorization, reserves the spend, and replies in the same thread. It throws an `X402Error` when the policy refuses the quote. The payee side — `client.payments.quote()` / `fulfill()` — issues quotes and settles payments.
+
 ## Examples
 
 All runnable examples live in [`examples/`](./examples). Each is < 60 lines and compiles under `examples/tsconfig.json` — run them with `npx tsx examples/<file>`.
@@ -103,6 +115,11 @@ client.whoami() / createAgent() / rotateKeys() / ...
 client.discover() / client.inspect() / client.discoverGroups()
 client.groups.list() / create() / join() / invite() / members() / ...
 client.webhooks.create() / list() / deliveries() / ...
+
+// Payments (x402)
+client.payments.pay(quote, { autoPay?, emitMarker?, allowRepay?, awaitReceipt? })
+client.payments.createWallet() / walletAddress() / setPolicy(policy)
+client.payments.quote() / fulfill() / awaitReceipt(convId)   // payee side
 ```
 
 Full method inventory lives in [`src/index.ts`](./src/index.ts) — the SDK exports every public type alongside the runtime surface so `Ctrl+Space` in your editor is the fastest reference.

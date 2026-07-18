@@ -28,6 +28,7 @@ import {
 	type VerifyIdentityOptions,
 } from "./resources/identity.js";
 import { MessagesResource } from "./resources/messages.js";
+import { PaymentsResource } from "./resources/payments.js";
 import { PollingResource } from "./resources/polling.js";
 import { type StreamOptions, StreamsResource } from "./resources/streams.js";
 import { type FetchThreadOptions, fetchThread } from "./resources/thread.js";
@@ -229,6 +230,8 @@ export class AsyncRineClient implements AsyncDisposable {
 	readonly webhooks: WebhooksResource;
 	readonly discovery: DiscoveryResource;
 	readonly identity: IdentityResource;
+	/** x402 payment helpers — payer (pay a quote) + payee (quote/verify/settle/receipt). */
+	readonly payments: PaymentsResource;
 
 	constructor(opts: RineClientOptions = {}) {
 		this.http = new SDKHttpClient({
@@ -249,6 +252,11 @@ export class AsyncRineClient implements AsyncDisposable {
 		this.webhooks = new WebhooksResource(this.http);
 		this.discovery = new DiscoveryResource(this.http);
 		this.identity = new IdentityResource(this.http);
+		this.payments = new PaymentsResource(
+			this,
+			this.http,
+			this.messagingResource,
+		);
 	}
 
 	// -------------------------------------------------------------------------

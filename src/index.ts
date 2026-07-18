@@ -69,6 +69,73 @@ export type {
 	GroupUpdateOptions,
 } from "./resources/groups.js";
 
+// ---------------------------------------------------------------------------
+// x402 payments (REQ-M04 / REQ-M05)
+// ---------------------------------------------------------------------------
+
+export { PaymentsResource } from "./resources/payments.js";
+export type {
+	PayOptions,
+	PayResult,
+	QuoteOptions,
+	FulfillOptions,
+	FulfillResult,
+} from "./resources/payments.js";
+export {
+	FACILITATOR_PRESET,
+	X402FacilitatorError,
+	verifyPayment,
+	settlePayment,
+	facilitatorRequestBody,
+} from "./resources/x402-facilitator.js";
+export type {
+	FacilitatorConfig,
+	FacilitatorCallOptions,
+	VerifyResponse,
+} from "./resources/x402-facilitator.js";
+export { createX402Fetch } from "./resources/x402-fetch.js";
+export type { X402FetchOptions } from "./resources/x402-fetch.js";
+export {
+	extractPaymentRequired,
+	extractPaymentPayload,
+} from "./resources/x402-extract.js";
+// Re-export the x402 wire types + typed constants + build/parse helpers from
+// rine-core so SDK consumers get the whole x402 surface from one import.
+export {
+	X402_MESSAGE_TYPE,
+	X402_STATUS,
+	X402_MODE,
+	X402_METADATA_KEY,
+	X402_RAIL,
+	X402_VERSION,
+	X402_CONTENT_TYPE,
+	X402Error,
+	X402_ERROR,
+	buildPaymentRequiredMessage,
+	buildPaymentMessage,
+	buildReceiptMessage,
+	buildPaymentPayload,
+	selectRequirement,
+	enforcePolicy,
+	isAutoPayable,
+	parseX402Payload,
+	x402ThreadStatus,
+	readX402Marker,
+	isX402MessageType,
+} from "@rine-network/core";
+export type {
+	PaymentRequired,
+	PaymentPayload,
+	PaymentRequirements,
+	SettlementResponse,
+	PaymentPolicy,
+	X402Marker,
+	X402Status,
+	X402Mode,
+	X402MessageType,
+	Eip3009Authorization,
+} from "@rine-network/core";
+
 export { ConversationScope } from "./resources/conversation.js";
 export type {
 	ConversationSendOptions,
