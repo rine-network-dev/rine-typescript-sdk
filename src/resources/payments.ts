@@ -17,10 +17,12 @@
  */
 
 import {
+	type FacilitatorConfig,
 	type PaymentPayload,
 	type PaymentPolicy,
 	type PaymentRequired,
 	type SettlementResponse,
+	type VerifyResponse,
 	createWallet,
 	getWalletAddress,
 	loadPolicy,
@@ -29,7 +31,6 @@ import {
 import type { SDKHttpClient } from "../api/http.js";
 import type { AsyncRineClient } from "../client.js";
 import type { DecryptedMessage, MessageRead } from "../types.js";
-import type { FacilitatorConfig, VerifyResponse } from "./x402-facilitator.js";
 import {
 	fulfill,
 	issueQuote,

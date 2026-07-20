@@ -44,7 +44,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 
 const core = await import("@rine-network/core");
 const { AsyncRineClient } = await import("../client.js");
-const { FACILITATOR_PRESET } = await import("./x402-facilitator.js");
+const { FACILITATOR_PRESET } = core;
 
 // ---------------------------------------------------------------------------
 // Fixtures

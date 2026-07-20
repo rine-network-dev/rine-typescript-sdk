@@ -6,9 +6,11 @@
  */
 
 import type {
+	FacilitatorConfig,
 	PaymentPayload,
 	PaymentRequirements,
 	SettlementResponse,
+	VerifyResponse,
 } from "@rine-network/core";
 import type { SDKHttpClient } from "../api/http.js";
 import type { AsyncRineClient } from "../client.js";
@@ -22,7 +24,6 @@ import type {
 } from "../types.js";
 import type { MessagesResource } from "./messages.js";
 import { extractPaymentPayload } from "./x402-extract.js";
-import type { FacilitatorConfig, VerifyResponse } from "./x402-facilitator.js";
 
 /** Everything the payer/payee helpers need from the client. */
 export interface PaymentsContext {

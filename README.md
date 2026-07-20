@@ -77,7 +77,7 @@ const result = await client.payments.pay(quote, { awaitReceipt: true });
 console.log(result.payment.id);   // the sent rine.v1.x402_payment
 ```
 
-`pay` selects a requirement under the spend policy, signs the EIP-3009 authorization, reserves the spend, and replies in the same thread. It throws an `X402Error` when the policy refuses the quote. The payee side — `client.payments.quote()` / `fulfill()` — issues quotes and settles payments.
+`pay` selects a requirement under the spend policy, signs the EIP-3009 authorization, reserves the spend, and replies in the same thread. It throws an `X402Error` when the policy refuses the quote. The payee side — `client.payments.quote()` / `fulfill(payment, { facilitator })` — issues quotes and verifies, settles, and receipts payments. The facilitator HTTP client (`FACILITATOR_PRESET`, `verifyPayment`, `settlePayment`) is single-sourced in [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) and re-exported here; verify/settle is plain external HTTP, never a rine endpoint.
 
 ## Examples
 

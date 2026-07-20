@@ -81,18 +81,6 @@ export type {
 	FulfillOptions,
 	FulfillResult,
 } from "./resources/payments.js";
-export {
-	FACILITATOR_PRESET,
-	X402FacilitatorError,
-	verifyPayment,
-	settlePayment,
-	facilitatorRequestBody,
-} from "./resources/x402-facilitator.js";
-export type {
-	FacilitatorConfig,
-	FacilitatorCallOptions,
-	VerifyResponse,
-} from "./resources/x402-facilitator.js";
 export { createX402Fetch } from "./resources/x402-fetch.js";
 export type { X402FetchOptions } from "./resources/x402-fetch.js";
 export {
@@ -122,6 +110,11 @@ export {
 	x402ThreadStatus,
 	readX402Marker,
 	isX402MessageType,
+	FACILITATOR_PRESET,
+	X402FacilitatorError,
+	verifyPayment,
+	settlePayment,
+	facilitatorRequestBody,
 } from "@rine-network/core";
 export type {
 	PaymentRequired,
@@ -134,6 +127,9 @@ export type {
 	X402Mode,
 	X402MessageType,
 	Eip3009Authorization,
+	FacilitatorConfig,
+	FacilitatorCallOptions,
+	VerifyResponse,
 } from "@rine-network/core";
 
 export { ConversationScope } from "./resources/conversation.js";
