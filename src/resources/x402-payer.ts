@@ -1,5 +1,5 @@
 /**
- * x402 payer helpers (REQ-M04, payer side): pay a received `payment_required`
+ * x402 payer helpers (payer side): pay a received `payment_required`
  * quote and (optionally) await the in-thread receipt. Policy is enforced at
  * signing (deny-by-default), the EIP-3009 authorization is signed with the
  * agent's wallet, and the `payment` is sent as an in-thread reply so the
@@ -34,7 +34,7 @@ import {
  * Pay a received quote. All local work — requirement selection, auto-pay gate,
  * EIP-3009 signing, message build — happens first; `reserveSpend` then debits the
  * daily journal under the cross-process lock as the LAST act before the reply is
- * sent (S2, O2′). A policy refusal (or an `ALREADY_PAID` re-pay without
+ * sent. A policy refusal (or an `ALREADY_PAID` re-pay without
  * `allowRepay`) throws {@link X402Error} and NO message is sent. The reservation
  * is fail-closed: once debited it stands even if the send then fails.
  */
@@ -59,7 +59,11 @@ export async function payQuote(
 	}
 
 	const walletKey = loadWalletKey(configDir, agentId);
-	const paymentPayload = buildPaymentPayload(pr, requirement, walletKey);
+	// stamp the answered quote's message id into the SIGNED payload so the
+	// payee binds this payment to the ONE quote it authored (never a pooled union).
+	const paymentPayload = buildPaymentPayload(pr, requirement, walletKey, {
+		quoteMessageId: quote.id,
+	});
 	const built = buildPaymentMessage(paymentPayload, {
 		emitMarker: opts.emitMarker,
 	});

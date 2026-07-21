@@ -70,7 +70,7 @@ export type {
 } from "./resources/groups.js";
 
 // ---------------------------------------------------------------------------
-// x402 payments (REQ-M04 / REQ-M05)
+// x402 payments
 // ---------------------------------------------------------------------------
 
 export { PaymentsResource } from "./resources/payments.js";
@@ -80,6 +80,7 @@ export type {
 	QuoteOptions,
 	FulfillOptions,
 	FulfillResult,
+	VerifySettleOptions,
 } from "./resources/payments.js";
 export { createX402Fetch } from "./resources/x402-fetch.js";
 export type { X402FetchOptions } from "./resources/x402-fetch.js";

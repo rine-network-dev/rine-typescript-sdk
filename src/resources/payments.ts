@@ -1,6 +1,5 @@
 /**
- * PaymentsResource — the `client.payments` facade for x402 payer + payee flows
- * (REQ-M04, TS SDK slice).
+ * PaymentsResource — the `client.payments` facade for x402 payer + payee flows.
  *
  * Payer:  receive a `payment_required` quote → policy check → sign → send the
  *         `payment` in-thread → (optionally) await the receipt.
@@ -17,7 +16,6 @@
  */
 
 import {
-	type FacilitatorConfig,
 	type PaymentPayload,
 	type PaymentPolicy,
 	type PaymentRequired,
@@ -31,13 +29,7 @@ import {
 import type { SDKHttpClient } from "../api/http.js";
 import type { AsyncRineClient } from "../client.js";
 import type { DecryptedMessage, MessageRead } from "../types.js";
-import {
-	fulfill,
-	issueQuote,
-	sendReceipt,
-	settle,
-	verify,
-} from "./x402-payee.js";
+import { fulfill, issueQuote, sendReceipt } from "./x402-payee.js";
 import { awaitReceipt, payQuote } from "./x402-payer.js";
 import {
 	type FulfillOptions,
@@ -47,8 +39,10 @@ import {
 	type PaymentsContext,
 	type QuoteOptions,
 	type Recipient,
+	type VerifySettleOptions,
 	resolveAgentId,
 } from "./x402-shared.js";
+import { settle, verify } from "./x402-verify-settle.js";
 
 export type {
 	PayOptions,
@@ -56,6 +50,7 @@ export type {
 	QuoteOptions,
 	FulfillOptions,
 	FulfillResult,
+	VerifySettleOptions,
 } from "./x402-shared.js";
 
 export class PaymentsResource {
@@ -120,23 +115,32 @@ export class PaymentsResource {
 		return issueQuote(this.ctx, target, pr, opts);
 	}
 
-	/** Verify a received `payment` via the configured facilitator (no broadcast). */
+	/**
+	 * Verify a received `payment` via the configured facilitator (no broadcast).
+	 * Requires `opts.expected` (the payee's own quote terms) to reconcile against;
+	 * without it the payee fails closed rather than trusting payer-authored terms.
+	 */
 	verify(
 		payment: DecryptedMessage | PaymentPayload,
-		opts: { facilitator: FacilitatorConfig; signal?: AbortSignal },
+		opts: VerifySettleOptions,
 	): Promise<VerifyResponse> {
 		return verify(payment, opts);
 	}
 
-	/** Settle a received `payment` via the configured facilitator (broadcast). */
+	/** Settle a received `payment` via the configured facilitator (broadcast). See {@link verify}. */
 	settle(
 		payment: DecryptedMessage | PaymentPayload,
-		opts: { facilitator: FacilitatorConfig; signal?: AbortSignal },
+		opts: VerifySettleOptions,
 	): Promise<SettlementResponse> {
 		return settle(payment, opts);
 	}
 
-	/** Verify → settle → send `receipt` in-thread (settle-first). */
+	/**
+	 * Bind → verify → settle → send `receipt` in-thread (settle-first). The
+	 * payment is bound to the ONE quote it references or to operator
+	 * `opts.expected` terms; a missing/forged ref with no override fails closed.
+	 * {@link FulfillResult.matchedQuote} names the reconciled quote.
+	 */
 	fulfill(
 		payment: DecryptedMessage,
 		opts: FulfillOptions,

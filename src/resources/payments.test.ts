@@ -6,6 +6,12 @@
  * (a fresh temp configDir carries a real secp256k1 wallet + spend policy), so
  * these tests exercise genuine EIP-3009 signing and genuine policy enforcement.
  * The facilitator is mocked at the global `fetch` layer.
+ *
+ * R-1 binding: the payer stamps `extensions["rine.quoteMessageId"]` into the
+ * signed payload; the payee resolves THAT quote via rine-core's shared
+ * `resolvePayeeRequirement` (mocked here at the package boundary — its ref-load +
+ * self-decrypt is exhaustively tested in rine-core), then reconciles + settles.
+ * The operator `expected` override runs the REAL `reconcilePayment` end-to-end.
  */
 
 import { randomUUID } from "node:crypto";
@@ -31,6 +37,10 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		resolveToUuid: vi.fn(async () => PAYEE_ID),
 		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
 		normalizeHandle: vi.fn((h: string) => h),
+		// R-1 quote-ref resolution (ref load + self-decrypt + payee-issued proof)
+		// lives in rine-core and is unit-tested there; the SDK only needs to wire
+		// its result through, so we control the seam here.
+		resolvePayeeRequirement: vi.fn(),
 		encryptMessage: vi.fn(async (_c, _s, _k, payload: unknown) => {
 			capturedEncryptPayload = payload;
 			return {
@@ -44,7 +54,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 
 const core = await import("@rine-network/core");
 const { AsyncRineClient } = await import("../client.js");
-const { FACILITATOR_PRESET } = core;
+const { FACILITATOR_PRESET, X402Error, X402_ERROR, X402_QUOTE_REF_KEY } = core;
+
+const resolvePayeeRequirementMock = vi.mocked(core.resolvePayeeRequirement);
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -79,6 +91,27 @@ function paymentRequired(amount = "100000") {
 		],
 		extensions: {},
 	};
+}
+
+/** The payee-authored requirement (accepts[0]) a resolved quote settles against. */
+function payeeRequirement(amount = "100000") {
+	return paymentRequired(amount).accepts[0] as Record<string, unknown>;
+}
+
+/** A resolved-quote struct as rine-core's `resolvePayeeRequirement` returns it. */
+function resolvedQuote(
+	requirement: Record<string, unknown>,
+	quoteMessageId: string | null,
+) {
+	return {
+		requirement,
+		match: {
+			quoteMessageId,
+			amount: requirement.amount,
+			asset: requirement.asset,
+			network: requirement.network,
+		},
+	} as unknown as Awaited<ReturnType<typeof core.resolvePayeeRequirement>>;
 }
 
 function quoteMessage(pr = paymentRequired()) {
@@ -128,6 +161,8 @@ function makeClient(originalFor: ReturnType<typeof quoteMessage>) {
 			return { ...REPLY_RESPONSE, type: body.type };
 		},
 	);
+	// biome-ignore lint/suspicious/noExplicitAny: test override
+	(client as any).http.get = vi.fn(async () => ({}));
 	// core.get is used by reply() to fetch the original message.
 	// biome-ignore lint/suspicious/noExplicitAny: test override
 	(client as any).http.getCoreHttpClient = () => ({
@@ -156,6 +191,7 @@ beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "rine-x402-"));
 	core.createWallet(tmp, OUR_AGENT_ID);
 	capturedEncryptPayload = undefined;
+	resolvePayeeRequirementMock.mockReset();
 });
 
 afterEach(() => {
@@ -198,6 +234,25 @@ describe("PaymentsResource payer", () => {
 
 		// Spend was recorded (0.10 EURC = 100000 canonical micro-units).
 		expect(core.readDailySpent(tmp, OUR_AGENT_ID)).toBe(100000n);
+	});
+
+	it("test_pay_stamps_answered_quote_ref_into_signed_payload", async () => {
+		core.savePolicy(tmp, OUR_AGENT_ID, HAPPY_POLICY);
+		const quote = quoteMessage();
+		const client = makeClient(quote);
+
+		const result = await client.payments.pay(quote);
+
+		// R-1: the answered quote's message id rides inside the SIGNED, E2EE payload
+		// so the payee can bind this payment to the ONE quote it authored.
+		const stamped = (
+			result.paymentPayload.extensions as Record<string, unknown>
+		)[X402_QUOTE_REF_KEY];
+		expect(stamped).toBe(quote.id);
+		const encrypted = capturedEncryptPayload as {
+			extensions: Record<string, unknown>;
+		};
+		expect(encrypted.extensions[X402_QUOTE_REF_KEY]).toBe(quote.id);
 	});
 
 	it("test_pay_when_no_policy_denies_by_default_and_sends_nothing", async () => {
@@ -265,7 +320,11 @@ describe("PaymentsResource payer", () => {
 // ---------------------------------------------------------------------------
 
 describe("PaymentsResource payee", () => {
-	function paymentMessage() {
+	// The payer's echoed `accepted` block — overridable so a hostile payer can
+	// diverge it from the payee's quote (F-1 attack vectors).
+	function paymentMessage(
+		accepted: Record<string, unknown> = payeeRequirement(),
+	) {
 		return {
 			id: randomUUID(),
 			conversation_id: randomUUID(),
@@ -275,7 +334,7 @@ describe("PaymentsResource payee", () => {
 			content_type: "application/json",
 			plaintext: {
 				x402Version: 2,
-				accepted: paymentRequired().accepts[0],
+				accepted,
 				payload: {
 					signature: `0x${"11".repeat(65)}`,
 					authorization: {
@@ -287,12 +346,31 @@ describe("PaymentsResource payee", () => {
 						nonce: `0x${"22".repeat(32)}`,
 					},
 				},
-				extensions: {},
+				extensions: { [X402_QUOTE_REF_KEY]: "quote-abc" },
 			},
 			metadata: {},
 			decrypt_error: null,
 		} as unknown as import("../types.js").DecryptedMessage;
 	}
+
+	/** Stub the facilitator verify (+settle) responses at the fetch layer. */
+	function stubFacilitator(...bodies: Record<string, unknown>[]) {
+		const fetchMock = vi.fn();
+		for (const body of bodies) {
+			fetchMock.mockResolvedValueOnce(
+				new Response(JSON.stringify(body), { status: 200 }),
+			);
+		}
+		vi.stubGlobal("fetch", fetchMock);
+		return fetchMock;
+	}
+
+	const SETTLEMENT = {
+		success: true,
+		transaction: "0xabc",
+		network: "eip155:8453",
+		payer: "0x1111",
+	};
 
 	it("test_quote_to_recipient_sends_payment_required_with_marker", async () => {
 		const client = makeClient(quoteMessage());
@@ -309,17 +387,14 @@ describe("PaymentsResource payee", () => {
 	});
 
 	it("test_verify_posts_standard_facilitator_body_to_verify_endpoint", async () => {
-		const fetchMock = vi.fn(
-			async () =>
-				new Response(JSON.stringify({ isValid: true, payer: "0x1111" }), {
-					status: 200,
-				}),
-		);
-		vi.stubGlobal("fetch", fetchMock);
+		const fetchMock = stubFacilitator({ isValid: true, payer: "0x1111" });
 		const client = makeClient(quoteMessage());
 
+		// `expected` supplies the payee-owned terms the standalone verify reconciles
+		// against (no thread context on this primitive).
 		const res = await client.payments.verify(paymentMessage(), {
 			facilitator: FACILITATOR_PRESET.payai,
+			expected: payeeRequirement() as never,
 		});
 
 		expect(res.isValid).toBe(true);
@@ -334,35 +409,232 @@ describe("PaymentsResource payee", () => {
 		expect(body.paymentPayload.payload.signature).toMatch(/^0x/);
 	});
 
-	it("test_fulfill_when_valid_settles_and_sends_completed_receipt", async () => {
-		const settlement = {
-			success: true,
-			transaction: "0xabc",
-			network: "eip155:8453",
-			payer: "0x1111",
-		};
-		const fetchMock = vi
-			.fn()
-			.mockResolvedValueOnce(
-				new Response(JSON.stringify({ isValid: true }), { status: 200 }),
-			)
-			.mockResolvedValueOnce(
-				new Response(JSON.stringify(settlement), { status: 200 }),
-			);
-		vi.stubGlobal("fetch", fetchMock);
+	// -----------------------------------------------------------------------
+	// R-1 — payee binds to the ONE referenced quote, never the payer's `accepted`
+	// -----------------------------------------------------------------------
 
+	it("test_fulfill_ref_bind_settles_and_surfaces_matched_quote", async () => {
+		resolvePayeeRequirementMock.mockResolvedValue(
+			resolvedQuote(payeeRequirement(), "quote-abc"),
+		);
+		const fetchMock = stubFacilitator({ isValid: true }, SETTLEMENT);
 		const payment = paymentMessage();
 		const client = makeClient(payment);
+
 		const result = await client.payments.fulfill(payment, {
 			facilitator: FACILITATOR_PRESET.payai,
 		});
 
 		expect(result.settlement?.success).toBe(true);
 		expect(fetchMock).toHaveBeenCalledTimes(2);
-		// Receipt sent in-thread with the completed marker.
-		expect(posts).toHaveLength(1);
+		// The payment was bound to the referenced quote in THIS conversation.
+		expect(resolvePayeeRequirementMock).toHaveBeenCalledWith(
+			expect.objectContaining({ conversationId: payment.conversation_id }),
+		);
+		// The facilitator saw the PAYEE-owned requirement, never pp.accepted.
+		const verifyBody = JSON.parse(
+			(fetchMock.mock.calls[0]?.[1] as RequestInit).body as string,
+		);
+		expect(verifyBody.paymentRequirements.payTo).toBe(
+			"0x000000000000000000000000000000000000dEaD",
+		);
+		// The matched quote is surfaced for good<->quote binding.
+		expect(result.matchedQuote).toEqual({
+			quoteMessageId: "quote-abc",
+			amount: "100000",
+			asset: EURC_BASE,
+			network: "eip155:8453",
+		});
 		expect(posts[0]?.body.type).toBe("rine.v1.x402_receipt");
 		expect(markerStatus(posts[0]?.body)).toBe("payment-completed");
+	});
+
+	it("test_fulfill_threads_real_facilitator_verify_response_fields", async () => {
+		// The facilitator's `/verify` reply carries `payer` plus provider-specific
+		// fields; fulfill must thread that REAL response through — not synthesise a
+		// bare `{ isValid: true }` that drops everything the facilitator returned.
+		resolvePayeeRequirementMock.mockResolvedValue(
+			resolvedQuote(payeeRequirement(), "quote-abc"),
+		);
+		stubFacilitator(
+			{
+				isValid: true,
+				payer: "0x1111111111111111111111111111111111111111",
+				riskScore: 7,
+			},
+			SETTLEMENT,
+		);
+		const payment = paymentMessage();
+		const client = makeClient(payment);
+
+		const result = await client.payments.fulfill(payment, {
+			facilitator: FACILITATOR_PRESET.payai,
+		});
+
+		expect(result.verification.isValid).toBe(true);
+		// `payer` and the provider-specific `riskScore` survive to the caller.
+		expect(result.verification.payer).toBe(
+			"0x1111111111111111111111111111111111111111",
+		);
+		expect(result.verification.riskScore).toBe(7);
+		expect(result.settlement?.success).toBe(true);
+	});
+
+	it("test_fulfill_when_invalid_skips_settle_and_still_surfaces_quote", async () => {
+		resolvePayeeRequirementMock.mockResolvedValue(
+			resolvedQuote(payeeRequirement(), "quote-abc"),
+		);
+		const fetchMock = stubFacilitator({
+			isValid: false,
+			invalidReason: "insufficient_funds",
+			payer: "0x1111111111111111111111111111111111111111",
+		});
+		const payment = paymentMessage();
+		const client = makeClient(payment);
+
+		const result = await client.payments.fulfill(payment, {
+			facilitator: FACILITATOR_PRESET.payai,
+		});
+
+		expect(result.settlement).toBeNull();
+		expect(fetchMock).toHaveBeenCalledTimes(1); // verify only, no settle
+		expect(result.verification.invalidReason).toBe("insufficient_funds");
+		// The REAL verify response is threaded on the failure branch too, so `payer`
+		// survives instead of being dropped by a synthesised `{ isValid: false }`.
+		expect(result.verification.payer).toBe(
+			"0x1111111111111111111111111111111111111111",
+		);
+		// A quote WAS resolved, so its provenance still rides through.
+		expect(result.matchedQuote?.quoteMessageId).toBe("quote-abc");
+		expect(capturedEncryptPayload).toMatchObject({
+			success: false,
+			errorReason: "insufficient_funds",
+		});
+		expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
+	});
+
+	it("test_fulfill_refuses_missing_or_forged_ref_fail_closed", async () => {
+		// rine-core raises NO_QUOTE for a missing/forged/cross-conversation ref.
+		resolvePayeeRequirementMock.mockRejectedValue(
+			new X402Error(X402_ERROR.NO_QUOTE, "no payee-issued quote reference"),
+		);
+		const fetchMock = stubFacilitator();
+		const payment = paymentMessage();
+		const client = makeClient(payment);
+
+		const result = await client.payments.fulfill(payment, {
+			facilitator: FACILITATOR_PRESET.payai,
+		});
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(result.settlement).toBeNull();
+		expect(result.verification.invalidReason).toBe("no-quote");
+		expect(result.matchedQuote).toBeNull();
+		expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
+	});
+
+	it("test_fulfill_refuses_cross_quote_underpayment", async () => {
+		// The referenced quote wants more than the payer authorized → mismatch.
+		resolvePayeeRequirementMock.mockRejectedValue(
+			new X402Error(
+				X402_ERROR.REQUIREMENT_MISMATCH,
+				"payment underpays the referenced quote",
+			),
+		);
+		const fetchMock = stubFacilitator();
+		const payment = paymentMessage();
+		const client = makeClient(payment);
+
+		const result = await client.payments.fulfill(payment, {
+			facilitator: FACILITATOR_PRESET.payai,
+		});
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(result.verification.invalidReason).toBe("requirement-mismatch");
+		expect(result.matchedQuote).toBeNull();
+		expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
+	});
+
+	it("test_fulfill_via_expected_override_settles_without_ref", async () => {
+		const fetchMock = stubFacilitator({ isValid: true }, SETTLEMENT);
+		const payment = paymentMessage();
+		const client = makeClient(payment);
+
+		// The operator override is authoritative — the REAL reconcilePayment runs
+		// against it; the ref path (resolvePayeeRequirement) is never consulted.
+		const result = await client.payments.fulfill(payment, {
+			facilitator: FACILITATOR_PRESET.payai,
+			expected: payeeRequirement() as never,
+		});
+
+		expect(result.settlement?.success).toBe(true);
+		expect(resolvePayeeRequirementMock).not.toHaveBeenCalled();
+		// An override carries no quote message id, but does report its terms.
+		expect(result.matchedQuote).toEqual({
+			quoteMessageId: null,
+			amount: "100000",
+			asset: EURC_BASE,
+			network: "eip155:8453",
+		});
+		expect(markerStatus(posts[0]?.body)).toBe("payment-completed");
+	});
+
+	it("test_fulfill_override_mismatch_refuses_via_real_reconcile", async () => {
+		const fetchMock = stubFacilitator();
+		// Payer's `accepted` pays a DIFFERENT payTo than the operator's expected
+		// terms — the real reconciler refuses before any facilitator call.
+		const payment = paymentMessage({
+			...payeeRequirement(),
+			payTo: "0x000000000000000000000000000000000000BEEF",
+		});
+		const client = makeClient(payment);
+
+		const result = await client.payments.fulfill(payment, {
+			facilitator: FACILITATOR_PRESET.payai,
+			expected: payeeRequirement() as never,
+		});
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(result.verification.invalidReason).toBe("requirement-mismatch");
+		expect(result.matchedQuote).toBeNull();
+		expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
+	});
+
+	it("test_fulfill_refuses_malformed_payload_with_typed_failure", async () => {
+		const fetchMock = stubFacilitator();
+		// A structurally malformed payment (no `authorization`) — F-4.
+		const payment = {
+			id: randomUUID(),
+			conversation_id: randomUUID(),
+			type: "rine.v1.x402_payment",
+			content_type: "application/json",
+			plaintext: { x402Version: 2, payload: {} },
+			metadata: {},
+			decrypt_error: null,
+		} as unknown as import("../types.js").DecryptedMessage;
+		const client = makeClient(payment);
+
+		const result = await client.payments.fulfill(payment, {
+			facilitator: FACILITATOR_PRESET.payai,
+		});
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(result.settlement).toBeNull();
+		expect(result.verification.invalidReason).toBe("malformed-payload");
+		expect(result.matchedQuote).toBeNull();
+		expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
+	});
+
+	it("test_verify_without_expected_fails_closed", async () => {
+		const fetchMock = stubFacilitator();
+		const client = makeClient(quoteMessage());
+
+		await expect(
+			client.payments.verify(paymentMessage(), {
+				facilitator: FACILITATOR_PRESET.payai,
+			}),
+		).rejects.toMatchObject({ name: "X402Error", code: "no-quote" });
+		expect(fetchMock).not.toHaveBeenCalled();
 	});
 
 	it("test_awaitReceipt_returns_the_matching_in_thread_receipt", async () => {
@@ -394,33 +666,5 @@ describe("PaymentsResource payee", () => {
 			timeout: 50,
 		});
 		expect(got).toBeNull();
-	});
-
-	it("test_fulfill_when_invalid_skips_settle_and_sends_failed_receipt", async () => {
-		const fetchMock = vi.fn(
-			async () =>
-				new Response(
-					JSON.stringify({
-						isValid: false,
-						invalidReason: "insufficient_funds",
-					}),
-					{ status: 200 },
-				),
-		);
-		vi.stubGlobal("fetch", fetchMock);
-
-		const payment = paymentMessage();
-		const client = makeClient(payment);
-		const result = await client.payments.fulfill(payment, {
-			facilitator: FACILITATOR_PRESET.payai,
-		});
-
-		expect(result.settlement).toBeNull();
-		expect(fetchMock).toHaveBeenCalledTimes(1); // verify only, no settle
-		expect(capturedEncryptPayload).toMatchObject({
-			success: false,
-			errorReason: "insufficient_funds",
-		});
-		expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
 	});
 });

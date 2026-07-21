@@ -1,39 +1,45 @@
 /**
- * x402 payee helpers (REQ-M04, payee side): issue a `payment_required` quote,
- * verify + settle a received `payment` via the configured facilitator, and send
- * the `receipt`. Facilitator verify/settle is plain external HTTP (never rine).
- * The `fulfill` convenience is settle-first; the `verify`/`settle`/`sendReceipt`
- * primitives compose for the `settle-after-delivery` mode.
+ * x402 payee helpers: issue a `payment_required` quote, verify + settle
+ * a received `payment` via the facilitator (plain external HTTP, never rine), and
+ * send the `receipt`. `fulfill` is settle-first; `verify`/`settle`/`sendReceipt`
+ * compose for `settle-after-delivery`.
+ *
+ * `fulfill` never settles the payer-echoed `accepted`. It binds the payment
+ * to the ONE quote it references (`extensions["rine.quoteMessageId"]`, proven
+ * payee-issued by rine-core's shared `resolvePayeeRequirement`) or to operator
+ * `expected` terms; a missing/forged ref with no override fails CLOSED (`NO_QUOTE`).
  */
 
 import {
-	type FacilitatorConfig,
 	type PaymentPayload,
 	type PaymentRequired,
+	type ResolvedPayeeRequirement,
 	type SettlementResponse,
-	type VerifyResponse,
+	X402Error,
 	X402_CONTENT_TYPE,
 	buildPaymentRequiredMessage,
 	buildReceiptMessage,
-	settlePayment,
-	verifyPayment,
+	refusalReceiptBody,
+	resolvePayeeRequirement,
+	settleToReceipt,
 } from "@rine-network/core";
 import type { DecryptedMessage, MessageRead, MessageUuid } from "../types.js";
 import { extractPaymentPayload } from "./x402-extract.js";
 import {
 	type FulfillOptions,
 	type FulfillResult,
+	type MatchedQuote,
 	type PaymentsContext,
 	type QuoteOptions,
 	type Recipient,
 	mergeMetadata,
-	toPaymentPayload,
+	reconcileExpected,
+	resolveAgentId,
 } from "./x402-shared.js";
 
 /**
- * Issue a `payment_required` quote. When `target` is a received message the
- * quote threads as a reply (quoting a `task_request`, the common case); a
- * recipient handle/UUID opens a fresh conversation.
+ * Issue a `payment_required` quote. A received-message `target` threads as a reply
+ * (quoting a `task_request`); a recipient handle/UUID opens a fresh conversation.
  */
 export function issueQuote(
 	ctx: PaymentsContext,
@@ -63,62 +69,121 @@ export function issueQuote(
 	});
 }
 
-/** Verify a received `payment` via the facilitator (no broadcast). */
-export function verify(
-	payment: DecryptedMessage | PaymentPayload,
-	opts: { facilitator: FacilitatorConfig; signal?: AbortSignal },
-): Promise<VerifyResponse> {
-	return verifyPayment(toPaymentPayload(payment), opts);
-}
-
-/** Settle a received `payment` via the facilitator (broadcast). */
-export function settle(
-	payment: DecryptedMessage | PaymentPayload,
-	opts: { facilitator: FacilitatorConfig; signal?: AbortSignal },
-): Promise<SettlementResponse> {
-	return settlePayment(toPaymentPayload(payment), opts);
-}
-
 /**
- * Full settle-first flow: verify → settle → send `receipt` in-thread. On a
- * failed verification, settlement is skipped and a `success:false` receipt is
- * sent so the payer's thread reaches a terminal `payment-failed` state.
+ * Settle-first flow: bind → verify → settle → send `receipt` in-thread.
+ * `opts.expected` wins, else the ONE quote the payment references is loaded and
+ * reconciled. A missing/forged ref with no override, no matching terms (wrong
+ * `payTo`/asset/network/scheme or underpayment), or a malformed payload all
+ * REFUSE with a `success:false` receipt — the payer `accepted` block is never
+ * forwarded. {@link FulfillResult.matchedQuote} names the reconciled quote so the
+ * caller can bind it to the good it delivers.
  */
 export async function fulfill(
 	ctx: PaymentsContext,
 	payment: DecryptedMessage,
 	opts: FulfillOptions,
 ): Promise<FulfillResult> {
-	const pp = extractPaymentPayload(payment);
-	const verification = await verifyPayment(pp, {
-		facilitator: opts.facilitator,
-		signal: opts.signal,
-	});
-
-	let settlement: SettlementResponse | null = null;
-	let receiptBody: SettlementResponse;
-	if (verification.isValid) {
-		settlement = await settlePayment(pp, {
-			facilitator: opts.facilitator,
-			signal: opts.signal,
-		});
-		receiptBody = settlement;
-	} else {
-		receiptBody = {
-			success: false,
-			transaction: "",
-			network: pp.accepted.network,
-			payer: pp.payload.authorization.from,
-			errorReason: verification.invalidReason ?? "verification_failed",
-		};
+	let pp: PaymentPayload;
+	try {
+		pp = extractPaymentPayload(payment);
+	} catch (err) {
+		return refuse(ctx, payment, opts, reason(err), "", "", null);
 	}
 
-	const receipt = await sendReceipt(ctx, payment, receiptBody, {
+	let resolved: ResolvedPayeeRequirement;
+	try {
+		resolved = opts.expected
+			? reconcileExpected(pp, opts.expected)
+			: await resolveReferenced(ctx, payment, pp, opts);
+	} catch (err) {
+		return refuse(
+			ctx,
+			payment,
+			opts,
+			reason(err),
+			pp.accepted.network,
+			pp.payload.authorization.from,
+			null,
+		);
+	}
+
+	const outcome = await settleToReceipt(
+		pp,
+		resolved,
+		opts.facilitator,
+		opts.signal,
+	);
+	const receipt = await sendReceipt(ctx, payment, outcome.receiptBody, {
 		agent: opts.agent,
 		emitMarker: opts.emitMarker,
 		signal: opts.signal,
 	});
-	return { verification, settlement, receipt };
+	return {
+		// The REAL facilitator `/verify` response threaded through `settleToReceipt`
+		// — `payer` and any provider-specific fields survive to the caller instead of
+		// a synthesised `{ isValid }` stand-in.
+		verification: outcome.verification,
+		settlement: outcome.status === "verification-failed" ? null : outcome.receiptBody,
+		receipt,
+		matchedQuote: outcome.matchedQuote,
+	};
+}
+
+/**
+ * Resolve the payee-owned requirement from the payment's quote reference:
+ * resolve the payee agent + core HTTP client, then delegate to rine-core's shared
+ * {@link resolvePayeeRequirement} with no override (`expected: {}`) — it loads the
+ * referenced quote, proves it payee-issued + same-conversation, reconciles, and
+ * raises `NO_QUOTE` for any missing/forged ref.
+ */
+function resolveReferenced(
+	ctx: PaymentsContext,
+	payment: DecryptedMessage,
+	pp: PaymentPayload,
+	opts: FulfillOptions,
+): Promise<ResolvedPayeeRequirement> {
+	const client = ctx.http.getCoreHttpClient(
+		opts.signal ? { signal: opts.signal } : {},
+	);
+	return resolveAgentId(ctx, opts.agent, opts.signal).then((payeeAgentId) =>
+		resolvePayeeRequirement({
+			payment: pp,
+			expected: {},
+			client,
+			configDir: ctx.http.configDir,
+			payeeAgentId,
+			conversationId: payment.conversation_id,
+		}),
+	);
+}
+
+/** The typed x402 refusal code to surface on a receipt; rethrow anything else. */
+function reason(err: unknown): string {
+	if (err instanceof X402Error) return err.code;
+	throw err;
+}
+
+/** Thread a graceful `payment-failed` receipt and return a settled-nothing result. */
+function refuse(
+	ctx: PaymentsContext,
+	payment: DecryptedMessage,
+	opts: FulfillOptions,
+	errorReason: string,
+	network: string,
+	payer: string,
+	match: MatchedQuote | null,
+): Promise<FulfillResult> {
+	return sendReceipt(
+		ctx,
+		payment,
+		refusalReceiptBody(network, payer, errorReason),
+		{ agent: opts.agent, emitMarker: opts.emitMarker, signal: opts.signal },
+	).then((receipt) => ({
+		verification: { isValid: false, invalidReason: errorReason },
+		settlement: null,
+		receipt,
+		matchedQuote: match,
+	}));
 }
 
 /** Send a `receipt` (settlement result) threaded to the payer's `payment`. */

@@ -5,12 +5,16 @@
  * file-size cap while the class stays a thin delegator.
  */
 
-import type {
-	FacilitatorConfig,
-	PaymentPayload,
-	PaymentRequirements,
-	SettlementResponse,
-	VerifyResponse,
+import {
+	type FacilitatorConfig,
+	type MatchedQuote,
+	type PaymentPayload,
+	type PaymentRequirements,
+	type ResolvedPayeeRequirement,
+	type SettlementResponse,
+	type VerifyResponse,
+	reconcilePayment,
+	requirementAmount,
 } from "@rine-network/core";
 import type { SDKHttpClient } from "../api/http.js";
 import type { AsyncRineClient } from "../client.js";
@@ -24,6 +28,8 @@ import type {
 } from "../types.js";
 import type { MessagesResource } from "./messages.js";
 import { extractPaymentPayload } from "./x402-extract.js";
+
+export type { MatchedQuote } from "@rine-network/core";
 
 /** Everything the payer/payee helpers need from the client. */
 export interface PaymentsContext {
@@ -78,6 +84,27 @@ export interface FulfillOptions {
 	facilitator: FacilitatorConfig;
 	agent?: string;
 	emitMarker?: boolean;
+	/**
+	 * Fully operator-authored expected terms for an OUT-OF-BAND quote (escape
+	 * hatch). When supplied they OVERRIDE the payment's quote reference (operator
+	 * intent wins, no ref needed); when omitted, `fulfill` binds the payment to the
+	 * ONE quote it references (`extensions["rine.quoteMessageId"]`) and fails CLOSED
+	 * (`NO_QUOTE`) if the ref is missing/forged — never settling payer-authored terms.
+	 */
+	expected?: PaymentRequirements;
+	signal?: AbortSignal;
+}
+
+/**
+ * Options for the standalone `verify`/`settle` primitives (settle-after-delivery
+ * mode). These have no thread context to resolve a quote ref, so `expected` is the
+ * ONLY quote source: without it the payee fails CLOSED (`NO_QUOTE`) rather than
+ * trusting the payer's echoed `accepted` block.
+ */
+export interface VerifySettleOptions {
+	facilitator: FacilitatorConfig;
+	/** The payee-authored terms the payment must satisfy (its own issued quote). */
+	expected?: PaymentRequirements;
 	signal?: AbortSignal;
 }
 
@@ -85,6 +112,14 @@ export interface FulfillResult {
 	verification: VerifyResponse;
 	settlement: SettlementResponse | null;
 	receipt: MessageRead;
+	/**
+	 * The quote the settled payment answered: its message id (null for an
+	 * operator `expected` override) plus the reconciled amount/asset/network. Null
+	 * when the payment was refused before a quote could be resolved (malformed
+	 * payload, or an unresolvable ref). The payee integration owns the
+	 * good<->quote correspondence — confirm this matches the good you deliver.
+	 */
+	matchedQuote: MatchedQuote | null;
 }
 
 /** Resolve the acting agent's UUID via the shared sender-resolution path. */
@@ -113,4 +148,35 @@ export function toPaymentPayload(
 	return "id" in payment && "type" in payment
 		? extractPaymentPayload(payment as DecryptedMessage)
 		: (payment as PaymentPayload);
+}
+
+// --- payee-side reconciliation ----------------------------------------------
+
+/**
+ * Resolve a payment against a FULLY operator-authored `expected` requirement — the
+ * SDK's override branch, authoritative and needing no quote ref. Reuses
+ * rine-core's pure {@link reconcilePayment}; a payment matching the operator's
+ * single quote entry (right `payTo`/asset/network/scheme, ≥ amount) yields the
+ * payee-owned requirement to settle, else `REQUIREMENT_MISMATCH`. The match carries
+ * a null `quoteMessageId` (no in-thread quote was referenced). Callers forward the
+ * RETURNED requirement to the facilitator — never `pp.accepted`.
+ *
+ * Because `expected` is authored end-to-end by the operator, its `extra`
+ * (EIP-712 domain) and `maxTimeoutSeconds` are trusted — the CLI/MCP string-flag
+ * override is the surface that must re-derive `extra` from the registry instead.
+ */
+export function reconcileExpected(
+	pp: PaymentPayload,
+	expected: PaymentRequirements,
+): ResolvedPayeeRequirement {
+	const requirement = reconcilePayment(pp, [expected]);
+	return {
+		requirement,
+		match: {
+			quoteMessageId: null,
+			amount: requirementAmount(requirement),
+			asset: requirement.asset,
+			network: requirement.network,
+		},
+	};
 }

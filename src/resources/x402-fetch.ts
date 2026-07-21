@@ -1,5 +1,5 @@
 /**
- * REQ-M05 — x402 HTTP fetch wrapper (nice-to-have).
+ * x402 HTTP fetch wrapper.
  *
  * Wraps a `fetch` call so a classic HTTP `402 Payment Required` is paid
  * automatically: parse the returned `PaymentRequired` quote, enforce the local
