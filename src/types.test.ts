@@ -20,7 +20,7 @@ describe("MessageType.Webhook", () => {
 });
 
 // ---------------------------------------------------------------------------
-// AgentReadSchema.warnings — REQ-01 (sdk-handoff-fixes)
+// AgentReadSchema.warnings
 // ---------------------------------------------------------------------------
 
 describe("AgentReadSchema.warnings", () => {
@@ -59,7 +59,7 @@ describe("AgentReadSchema.warnings", () => {
 });
 
 // ---------------------------------------------------------------------------
-// DecryptedMessageSchema.plaintext — REQ-05 (sdk-handoff-fixes)
+// DecryptedMessageSchema.plaintext
 // ---------------------------------------------------------------------------
 //
 // The plaintext field is now typed as `z.unknown().nullable().optional()`

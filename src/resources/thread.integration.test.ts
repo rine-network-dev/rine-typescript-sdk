@@ -1,5 +1,5 @@
 /**
- * REQ-SDK-TS-02 (integration) — `client.conversation(id).thread()` with REAL crypto.
+ * Integration — `client.conversation(id).thread()` with REAL crypto.
  *
  * Unlike `thread.test.ts` (which mocks `decryptEnvelope` to pin ciphertext
  * SELECTION), this suite exercises the END-TO-END decrypt path with real
@@ -8,7 +8,7 @@
  * `fetchThread`. Nothing crypto is mocked; only the HTTP boundary is stubbed:
  *
  *   - `http.get('/conversations/{id}/messages')` returns a `{messages,truncated}`
- *     page of both-sided rows (the real Slice A endpoint shape, REQ-SRV-04),
+ *     page of both-sided rows (the real endpoint shape),
  *   - `getCoreHttpClient().get('/agents/{id}/keys')` answers the sender-signature
  *     verification lookup from an in-memory keystore,
  *   - `resolveSenderId` returns the real caller id.
@@ -113,7 +113,7 @@ function row(over: Partial<MessageRead> & Pick<MessageRead, "type">): MessageRea
 	} as MessageRead;
 }
 
-describe("REQ-SDK-TS-02 (integration) — thread() real-crypto round-trip", () => {
+describe("thread() real-crypto round-trip (integration)", () => {
 	it("decrypts a real two-turn 1:1 thread, both sides, ordered", async () => {
 		// SENT: me → peer. encryptMessage yields BOTH the recipient copy and the
 		// self-seal blob (sealed to my own key) — exactly what send() POSTs.

@@ -1,5 +1,5 @@
 /**
- * Three-turn exchange using `client.conversation(convId)` — SPEC §11.2.
+ * Three-turn exchange using `client.conversation(convId)`.
  *
  * The scope builder auto-pins `conversation_id` on every `send()` /
  * `reply()` inside the scope so neither party has to thread it manually.
@@ -7,7 +7,6 @@
  * id, so the scope is a pure client-side ergonomic layer.
  *
  * Run: `npx tsx examples/conversation-turntaking.ts '<peer-handle>'`
- * SPEC refs: §11.2.
  */
 
 import {

@@ -1,5 +1,5 @@
 /**
- * Per-instance jittered refresh margin (rate-limit-resilience REQ-TS-02, D-4).
+ * Per-instance jittered refresh margin.
  *
  * The desync benefit is only real if each SDKHttpClient draws its own margin at
  * construction and threads it into getOrRefreshToken. These tests drive an
@@ -43,7 +43,7 @@ function marginOfCall(n: number): number | undefined {
 	return opts?.refreshMargin;
 }
 
-describe("SDKHttpClient per-instance refresh margin (REQ-TS-02)", () => {
+describe("SDKHttpClient per-instance refresh margin", () => {
 	beforeEach(() => {
 		getTokenSpy.mockClear();
 		marginSpy.mockReset();

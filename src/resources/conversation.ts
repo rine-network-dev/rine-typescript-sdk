@@ -220,7 +220,7 @@ export class ConversationScope {
 
 	/**
 	 * Fetch the both-sided, role-tagged transcript of this conversation
-	 * (REQ-SDK-TS-02) via `GET /conversations/{id}/messages`.
+	 * via `GET /conversations/{id}/messages`.
 	 *
 	 * Unlike `history()` (a received-only inbox page-walk), `thread()` returns
 	 * the agent's SENT turns too — each decrypted with the caller's own keys

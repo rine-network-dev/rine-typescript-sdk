@@ -552,7 +552,7 @@ describe("defineAgent ctx.conversation", () => {
 });
 
 // ---------------------------------------------------------------------------
-// REQ-07 (sdk-handoff-fixes) — ConversationScope peer from message
+// ConversationScope peer from message
 // ---------------------------------------------------------------------------
 
 describe("client.conversation(msg) — peer + anchor binding", () => {

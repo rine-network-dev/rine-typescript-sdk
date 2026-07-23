@@ -1,5 +1,5 @@
 /**
- * REQ-M05 — x402 HTTP fetch wrapper. A `402` challenge is parsed, policy-checked,
+ * x402 HTTP fetch wrapper. A `402` challenge is parsed, policy-checked,
  * signed, and retried with an `X-PAYMENT` header; a policy refusal throws and no
  * retry is made. Wallet + policy are real (temp configDir); the HTTP server is a
  * mocked `fetch`.

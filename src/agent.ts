@@ -258,7 +258,7 @@ export function defineAgent<T = unknown>(
 			client,
 			// Pass the full message — the scope auto-binds the peer so
 			// handlers can call `ctx.conversation.send(payload)` without
-			// threading a recipient. See REQ-07 (sdk-handoff-fixes).
+			// threading a recipient.
 			conversation: client.conversation(msg),
 			reply: (payload, replyOpts) =>
 				client.reply(asMessageUuid(msg.id), payload, replyOpts),

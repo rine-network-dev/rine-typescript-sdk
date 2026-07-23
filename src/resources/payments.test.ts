@@ -1,5 +1,5 @@
 /**
- * REQ-M04 (TS SDK slice) — x402 payer + payee helpers.
+ * x402 payer + payee helpers.
  *
  * The rine-core bridge's NETWORK-touching functions are mocked so no real HTTP
  * or peer keys are needed; the x402 wallet/policy/build primitives stay REAL
@@ -7,7 +7,7 @@
  * these tests exercise genuine EIP-3009 signing and genuine policy enforcement.
  * The facilitator is mocked at the global `fetch` layer.
  *
- * R-1 binding: the payer stamps `extensions["rine.quoteMessageId"]` into the
+ * Quote binding: the payer stamps `extensions["rine.quoteMessageId"]` into the
  * signed payload; the payee resolves THAT quote via rine-core's shared
  * `resolvePayeeRequirement` (mocked here at the package boundary — its ref-load +
  * self-decrypt is exhaustively tested in rine-core), then reconciles + settles.
@@ -37,7 +37,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		resolveToUuid: vi.fn(async () => PAYEE_ID),
 		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
 		normalizeHandle: vi.fn((h: string) => h),
-		// R-1 quote-ref resolution (ref load + self-decrypt + payee-issued proof)
+		// Quote-ref resolution (ref load + self-decrypt + payee-issued proof)
 		// lives in rine-core and is unit-tested there; the SDK only needs to wire
 		// its result through, so we control the seam here.
 		resolvePayeeRequirement: vi.fn(),
@@ -243,7 +243,7 @@ describe("PaymentsResource payer", () => {
 
 		const result = await client.payments.pay(quote);
 
-		// R-1: the answered quote's message id rides inside the SIGNED, E2EE payload
+		// The answered quote's message id rides inside the SIGNED, E2EE payload
 		// so the payee can bind this payment to the ONE quote it authored.
 		const stamped = (
 			result.paymentPayload.extensions as Record<string, unknown>
@@ -321,7 +321,7 @@ describe("PaymentsResource payer", () => {
 
 describe("PaymentsResource payee", () => {
 	// The payer's echoed `accepted` block — overridable so a hostile payer can
-	// diverge it from the payee's quote (F-1 attack vectors).
+	// diverge it from the payee's quote.
 	function paymentMessage(
 		accepted: Record<string, unknown> = payeeRequirement(),
 	) {
@@ -410,7 +410,7 @@ describe("PaymentsResource payee", () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// R-1 — payee binds to the ONE referenced quote, never the payer's `accepted`
+	// Payee binds to the ONE referenced quote, never the payer's `accepted`
 	// -----------------------------------------------------------------------
 
 	it("test_fulfill_ref_bind_settles_and_surfaces_matched_quote", async () => {
@@ -602,7 +602,7 @@ describe("PaymentsResource payee", () => {
 
 	it("test_fulfill_refuses_malformed_payload_with_typed_failure", async () => {
 		const fetchMock = stubFacilitator();
-		// A structurally malformed payment (no `authorization`) — F-4.
+		// A structurally malformed payment (no `authorization`).
 		const payment = {
 			id: randomUUID(),
 			conversation_id: randomUUID(),

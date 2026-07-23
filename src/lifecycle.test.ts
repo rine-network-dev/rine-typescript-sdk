@@ -1,10 +1,10 @@
 /**
  * Tests for the org & agent lifecycle additions:
- *   - register()                         (REQ-01, REQ-02, REQ-03)
- *   - createAgent() poll_url persist     (REQ-04)
- *   - updateOrg / eraseOrg / exportOrg   (REQ-05, REQ-06, REQ-07)
- *   - lazy org-ID cache                  (REQ-09)
- *   - domain constant objects            (REQ-10)
+ *   - register()
+ *   - createAgent() poll_url persist
+ *   - updateOrg / eraseOrg / exportOrg
+ *   - lazy org-ID cache
+ *   - domain constant objects
  */
 
 import * as fs from "node:fs";
@@ -44,7 +44,7 @@ const {
 	ErasureResultSchema,
 } = await import("./types.js");
 
-describe("register() — slug validation (REQ-01 client-side)", () => {
+describe("register() — slug validation (client-side)", () => {
 	beforeEach(() => {
 		performRegistrationMock.mockReset();
 	});
@@ -92,7 +92,7 @@ describe("register() — slug validation (REQ-01 client-side)", () => {
 	});
 });
 
-describe("register() — error mapping (REQ-01)", () => {
+describe("register() — error mapping", () => {
 	beforeEach(() => {
 		performRegistrationMock.mockReset();
 	});
@@ -140,7 +140,7 @@ describe("register() — error mapping (REQ-01)", () => {
 	});
 });
 
-describe("validateSlug — re-export smoke (REQ-02)", () => {
+describe("validateSlug — re-export smoke", () => {
 	it("is importable from the SDK surface", () => {
 		expect(typeof validateSlug).toBe("function");
 		expect(validateSlug("my-org")).toBe(true);
@@ -148,10 +148,10 @@ describe("validateSlug — re-export smoke (REQ-02)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Domain constant objects (REQ-10)
+// Domain constant objects
 // ---------------------------------------------------------------------------
 
-describe("Domain constant objects (REQ-10)", () => {
+describe("Domain constant objects", () => {
 	it("ConversationStatus has all 8 states with expected values", () => {
 		expect(ConversationStatus).toEqual({
 			Submitted: "submitted",
@@ -298,10 +298,10 @@ function sampleErasure(overrides: Record<string, unknown> = {}): Record<string, 
 }
 
 // ---------------------------------------------------------------------------
-// createAgent — poll_url persistence (REQ-04)
+// createAgent — poll_url persistence
 // ---------------------------------------------------------------------------
 
-describe("IdentityResource.createAgent — poll_url persistence (REQ-04)", () => {
+describe("IdentityResource.createAgent — poll_url persistence", () => {
 	let configDir: string;
 	beforeEach(() => {
 		configDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-sdk-lifecycle-"));
@@ -349,10 +349,10 @@ describe("IdentityResource.createAgent — poll_url persistence (REQ-04)", () =>
 });
 
 // ---------------------------------------------------------------------------
-// updateOrg (REQ-05)
+// updateOrg
 // ---------------------------------------------------------------------------
 
-describe("IdentityResource.updateOrg (REQ-05)", () => {
+describe("IdentityResource.updateOrg", () => {
 	it("PATCHes /org with a snake_case body and omits undefined fields", async () => {
 		const { http, calls } = makeHttp("/tmp/x", () => sampleOrg({ name: "New" }));
 		const identity = new IdentityResource(http);
@@ -388,10 +388,10 @@ describe("IdentityResource.updateOrg (REQ-05)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// eraseOrg — confirm guard + route (REQ-06)
+// eraseOrg — confirm guard + route
 // ---------------------------------------------------------------------------
 
-describe("IdentityResource.eraseOrg — confirm guard (REQ-06)", () => {
+describe("IdentityResource.eraseOrg — confirm guard", () => {
 	it("throws RineError when confirm is not true", async () => {
 		const { http, calls } = makeHttp("/tmp/x", () => sampleErasure());
 		const identity = new IdentityResource(http);
@@ -449,10 +449,10 @@ describe("IdentityResource.eraseOrg — confirm guard (REQ-06)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// exportOrg (REQ-07)
+// exportOrg
 // ---------------------------------------------------------------------------
 
-describe("IdentityResource.exportOrg (REQ-07)", () => {
+describe("IdentityResource.exportOrg", () => {
 	it("GETs /orgs/{orgId}/export and returns the array as-is", async () => {
 		const records = [{ type: "agent" }, { type: "message" }];
 		const { http, calls } = makeHttp("/tmp/x", (method, p) => {
@@ -500,10 +500,10 @@ describe("IdentityResource.exportOrg (REQ-07)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Lazy org-ID cache (REQ-09)
+// Lazy org-ID cache
 // ---------------------------------------------------------------------------
 
-describe("IdentityResource — lazy org-ID cache (REQ-09)", () => {
+describe("IdentityResource — lazy org-ID cache", () => {
 	it("calls whoami once, then reuses the cached ID across erase/export", async () => {
 		let orgCalls = 0;
 		const { http } = makeHttp("/tmp/x", (method, p) => {

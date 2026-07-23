@@ -176,7 +176,7 @@ describe("GroupsResource", () => {
 		});
 	});
 
-	it("create() accepts an options-bag first argument (REQ-04)", async () => {
+	it("create() accepts an options-bag first argument", async () => {
 		const { http, calls } = makeHttpStub(() => sampleGroup());
 		const groups = new GroupsResource(http);
 		await groups.create({

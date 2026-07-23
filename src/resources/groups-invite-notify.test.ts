@@ -1,6 +1,6 @@
 /**
  * Behavioural tests for the best-effort group-invite notification wiring on
- * `GroupsResource.invite()` (group-invite-delivery, REQ-TS2).
+ * `GroupsResource.invite()`.
  *
  * After a successful `POST /groups/{id}/invite` (and the existing best-effort
  * MLS add), the inviter seals a `rine.v1.group_invite` DM to the invitee so
@@ -11,7 +11,7 @@
  * Verifies:
  *   1. The notification is emitted via the core `sendGroupInviteNotification`
  *      helper, carrying the resolved inviter + invitee ids and the group
- *      handle/message (SPEC §5/D6 payload).
+ *      handle/message payload.
  *   2. It is gated on `configDir && messages`, exactly like the MLS hook — a
  *      resource constructed without a `MessagesResource` sends nothing.
  *   3. A failing notification (e.g. groups_only 403, missing keys) is swallowed

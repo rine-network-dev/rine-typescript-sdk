@@ -1,5 +1,5 @@
 /**
- * REQ-SDK-TS-02 — `client.conversation(id).thread()`.
+ * `client.conversation(id).thread()`.
  *
  * `thread()` fetches `GET /conversations/{id}/messages`, picks the ciphertext
  * the caller can open by `direction` (self-blob for sent, recipient blob for
@@ -118,8 +118,8 @@ function makeClient(rows: MessageRead[]): {
 				params: opts?.params,
 				extraHeaders: opts?.extraHeaders,
 			});
-			// The real Slice A endpoint returns `{ messages, truncated }`
-			// (REQ-SRV-04), NOT a cursor page — mirror that exact shape.
+			// The real endpoint returns `{ messages, truncated }`,
+			// NOT a cursor page — mirror that exact shape.
 			return { messages: rows, truncated: false };
 		},
 	);
@@ -141,7 +141,7 @@ afterEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("REQ-SDK-TS-02 — ConversationScope.thread()", () => {
+describe("ConversationScope.thread()", () => {
 	it("returns ordered role-tagged entries decrypted with the caller's keys", async () => {
 		const rows = [
 			row({
@@ -181,8 +181,8 @@ describe("REQ-SDK-TS-02 — ConversationScope.thread()", () => {
 		expect(out[0]?.text).toBe("decoded:SELF-CT-1");
 		expect(out[1]?.text).toBe("decoded:RECIPIENT-CT-2");
 
-		// (c) F4: a successfully-decrypted+verified row carries its signature
-		//     status (load-bearing for Slice E push-injection filtering).
+		// (c) a successfully-decrypted+verified row carries its signature
+		//     status (load-bearing for push-injection filtering).
 		expect(out[0]?.verificationStatus).toBe("verified");
 		expect(out[1]?.verificationStatus).toBe("verified");
 
@@ -285,7 +285,7 @@ describe("REQ-SDK-TS-02 — ConversationScope.thread()", () => {
 		expect(out[0]?.text).toBe("[unavailable]");
 		// The forged plaintext must not leak into the rendered turn.
 		expect(out[0]?.text).not.toContain("forged content");
-		// F4: a degraded row reports the underlying signature status, not a
+		// A degraded row reports the underlying signature status, not a
 		// hardcoded/silent "verified".
 		expect(out[0]?.verificationStatus).toBe("invalid");
 	});

@@ -90,7 +90,7 @@ export function asWebhookUuid(s: string): WebhookUuid {
 // ---------------------------------------------------------------------------
 
 /**
- * Canonical rine message type strings. Derived from `PROTOCOL.md §458-474`.
+ * Canonical rine message type strings.
  *
  * Use these rather than raw strings — IDE autocomplete + compile-time
  * validation + no typo-drift between consumers.
@@ -112,7 +112,7 @@ export const MessageType = {
 	CapabilityQuery: "rine.v1.capability_query",
 	CapabilityResponse: "rine.v1.capability_response",
 
-	// Payments (PROTOCOL.md §8)
+	// Payments
 	PaymentRequest: "rine.v1.payment_request",
 	PaymentConfirmation: "rine.v1.payment_confirmation",
 
@@ -124,7 +124,7 @@ export const MessageType = {
 	// Identity
 	IdentityVerification: "rine.v1.identity_verification",
 
-	// Group E2EE management (PROTOCOL.md §10.5)
+	// Group E2EE management
 	SenderKeyDistribution: "rine.v1.sender_key_distribution",
 	SenderKeyRequest: "rine.v1.sender_key_request",
 	GroupInvite: "rine.v1.group_invite",
@@ -310,7 +310,7 @@ export type MessageRead = z.infer<typeof MessageReadSchema>;
 
 /**
  * Both-sided conversation thread page returned by
- * `GET /conversations/{id}/messages` (REQ-SRV-04). The server emits
+ * `GET /conversations/{id}/messages`. The server emits
  * `{ messages, truncated }` (ascending, oldest→newest) — NOT a cursor page —
  * so this is parsed directly rather than through `parseCursorPage`.
  */

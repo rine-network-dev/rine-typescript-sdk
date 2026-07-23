@@ -10,7 +10,7 @@
  */
 
 // ---------------------------------------------------------------------------
-// Registration (module-level, pre-client) — REQ-01, REQ-02, REQ-03
+// Registration (module-level, pre-client)
 // ---------------------------------------------------------------------------
 
 export { register, validateSlug } from "./onboard.js";

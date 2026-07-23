@@ -139,6 +139,12 @@ export class MessagesResource {
 						configDir: this.http.configDir,
 						agentId,
 						msg: item,
+						// Same recovery as `read()`: a cold group row (no sender-key
+						// distribution ingested yet, or missing MLS state) refreshes
+						// its key material from the server and retries once, instead
+						// of surfacing an "unknown sender key id" that never heals.
+						retrySenderKey: true,
+						memo: this.http.decryptMemo,
 					}),
 				),
 			);
@@ -222,6 +228,7 @@ export class MessagesResource {
 				agentId,
 				msg,
 				retrySenderKey: true,
+				memo: this.http.decryptMemo,
 			});
 		} finally {
 			op.clear();
@@ -256,7 +263,7 @@ export class MessagesResource {
 			//    agent in this caller's org, then the SDK's default agent.
 			//
 			//    The foreign-`to_agent_id` case appears when the caller replies
-			//    to a message they themselves sent (REQ-02): `original.to_agent_id`
+			//    to a message they themselves sent: `original.to_agent_id`
 			//    points at the peer's agent, not one of ours. Skipping it lets
 			//    the flow reach the "replying to your own message" guard below
 			//    instead of failing earlier inside `resolveSenderId` with a
@@ -293,9 +300,9 @@ export class MessagesResource {
 				type: opts.type ?? DEFAULT_REPLY_TYPE,
 				content_type: opts.contentType ?? "application/json",
 				// `...encrypted` carries `self_encrypted_payload` (the sender
-				// self-seal from `encryptMessage`, REQ-SDK-TS-01) onto the wire
+				// self-seal from `encryptMessage`) onto the wire
 				// for 1:1 replies — there is no body whitelist that would strip
-				// it. The server (Slice A) persists it so the sender can later
+				// it. The server persists it so the sender can later
 				// self-read its own reply via `thread()`.
 				...encrypted,
 			};
@@ -389,6 +396,7 @@ export class MessagesResource {
 					agentId: senderId,
 					msg: replyMsg,
 					retrySenderKey: true,
+					memo: this.http.decryptMemo,
 				});
 				// `replySchema` narrowing runs at the client-layer wrapper.
 			}
@@ -498,7 +506,7 @@ export class MessagesResource {
 			...base,
 			to_agent_id: recipientId,
 			// `...encrypted` carries `self_encrypted_payload` (the sender
-			// self-seal from `encryptMessage`, REQ-SDK-TS-01) on the 1:1 send
+			// self-seal from `encryptMessage`) on the 1:1 send
 			// path. Group sends never reach here — `encryptGroupMessage`/
 			// `encryptMlsGroupMessage` return an `EncryptResult` with no
 			// `self_encrypted_payload`, so their `...result` spread carries

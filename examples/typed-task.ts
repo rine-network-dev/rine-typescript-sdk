@@ -1,5 +1,5 @@
 /**
- * End-to-end typed payload — SPEC §7.4 / §11.4.
+ * End-to-end typed payload.
  *
  * One Zod schema is written once and threaded through the agent loop:
  * `defineAgent<TaskRequest>({ schema })` narrows `msg.plaintext` to

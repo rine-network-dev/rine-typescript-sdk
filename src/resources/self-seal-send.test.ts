@@ -1,7 +1,7 @@
 /**
- * REQ-SDK-TS-01 — the self-seal blob rides the wire on 1:1 send + reply.
+ * The self-seal blob rides the wire on 1:1 send + reply.
  *
- * `encryptMessage` (Slice B) now returns `self_encrypted_payload` on its
+ * `encryptMessage` returns `self_encrypted_payload` on its
  * `EncryptResult`; both `send()` (1:1 branch of `buildSendBody`) and `reply()`
  * spread `...encrypted` into the POST body, so the blob reaches the server
  * with NO production code change. These tests pin that contract by capturing
@@ -22,7 +22,7 @@ const GROUP_ID = randomUUID();
 const SELF_BLOB = "SELF-SEALED-BLOB";
 
 // Mock the rine-core bridge BEFORE importing the SUT. `encryptMessage` returns
-// the self blob (Slice B contract); the group encrypt helpers do NOT.
+// the self blob; the group encrypt helpers do NOT.
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@rine-network/core")>();
 	return {
@@ -120,7 +120,7 @@ afterEach(() => {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("REQ-SDK-TS-01 — self-seal on send/reply", () => {
+describe("self-seal on send/reply", () => {
 	it("a 1:1 send carries self_encrypted_payload to the server", async () => {
 		const { client, bodies } = makeClient();
 

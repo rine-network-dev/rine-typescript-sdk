@@ -1,13 +1,12 @@
 /**
  * client.messages() — the lowest-level decrypted inbox loop.
  *
- * Shows the pre-decrypt type filter (D6c) and the typed `DecryptedMessage<T>`
+ * Shows the pre-decrypt type filter and the typed `DecryptedMessage<T>`
  * flowing from a Standard Schema v1 validator. For the common case
  * (handler-per-type, lifecycle, error isolation), prefer `defineAgent()` —
  * see `defineAgent-quickstart.ts`.
  *
  * Run: `npx tsx examples/messages-loop.ts`
- * SPEC refs: §11.1, §12, D6c.
  */
 
 import { AsyncRineClient, z } from "@rine-network/sdk";
@@ -27,7 +26,7 @@ const ac = new AbortController();
 process.once("SIGINT", () => ac.abort());
 
 // `type: 'rine.v1.task_request'` filters on the cleartext `type` field
-// before decrypt — other traffic never costs a crypto round-trip (D6c).
+// before decrypt — other traffic never costs a crypto round-trip.
 // `schema: TaskRequest` narrows `msg.plaintext` to `TaskRequest | null`.
 for await (const msg of client.messages<TaskRequest>({
 	type: "rine.v1.task_request",

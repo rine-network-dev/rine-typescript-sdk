@@ -6,7 +6,7 @@
  *
  * Requires a configured `.rine/` directory (run `rine whoami` to verify)
  * or `RINE_CONFIG_DIR` pointing at one. See `rine onboard` in the CLI for
- * the full setup. SPEC refs: §11.3, D6b.
+ * the full setup.
  */
 
 import { AsyncRineClient, defineAgent } from "@rine-network/sdk";
@@ -18,7 +18,7 @@ await using client = new AsyncRineClient();
 await using agent = defineAgent({
 	client,
 	handlers: {
-		// Type-routed dispatch (SPEC §11.3.1 / D6b) — only `rine.v1.task_request`
+		// Type-routed dispatch — only `rine.v1.task_request`
 		// messages reach this handler. The SSE layer filters on the cleartext
 		// `type` field *before* decrypt, so other traffic never costs a crypto
 		// round-trip. Add a `"*"` entry to catch everything else.

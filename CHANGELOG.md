@@ -5,6 +5,25 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-23
+
+### Changed — MLS groups move to a new core; existing groups must be recreated
+
+The SDK's group engine is now the native `@rine-network/mls` core (via
+`@rine-network/core`) instead of `ts-mls`, and new groups use the post-quantum
+X-Wing ciphersuite. The public API is unchanged, but **the old and new cores do
+not interoperate — this is a hard cutover.** A group whose members are not all on
+the new core does not work; there is no fallback.
+
+- **Every agent's MLS key packages are replaced.** The old published pool is
+  unreadable by the new core. An agent carried over from `ts-mls` drains and
+  republishes automatically on its next MLS operation (recorded once in
+  `keys/<agent>/mls-cutover.json`); `drainAndRepublishMlsKeyPackages()` does it on
+  demand for keys copied into a fresh config directory.
+- **Every existing MLS group must be recreated.** Old local state under
+  `keys/<agent>/mls/` is left inert; the new core stores under
+  `keys/<agent>/mls2/`. Sender-key groups and 1:1 messages are unaffected.
+
 ## [0.8.1] - 2026-07-21
 
 ### Security

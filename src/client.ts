@@ -57,9 +57,12 @@ export type { StreamOptions };
 // `RESERVED_MESSAGE_TYPES` is imported from `./types.js` — single-source
 // definition used by `messages()`, `defineAgent`, and public re-exports.
 // Reserved types are filtered from `client.messages()` unconditionally
-// unless `includeReserved: true` is passed. The only
-// entry — `rine.v1.sender_key_distribution` — is consumed by rine-core's
-// crypto ingest layer before the envelope reaches the SDK.
+// unless `includeReserved: true` is passed. The only entry —
+// `rine.v1.sender_key_distribution` — carries group key material, and
+// nothing ingests it off the stream: dropping the frame costs no key
+// material because `decryptEnvelope({ retrySenderKey: true })` fetches
+// pending distributions straight from the server when a group envelope
+// fails to open.
 
 // ---------------------------------------------------------------------------
 // Options
@@ -566,6 +569,13 @@ export class AsyncRineClient implements AsyncDisposable {
 				configDir: this.http.configDir,
 				agentId,
 				msg: envelope,
+				// Same recovery as `read()`. A group message can reach the stream
+				// before its key material does (the sender-key distribution is a
+				// separate message; MLS state arrives via Welcome/commit), so a
+				// cold group row must refresh from the server and retry once
+				// rather than yielding a permanent "unknown sender key id".
+				retrySenderKey: true,
+				memo: this.http.decryptMemo,
 			});
 			// Inbound schema runs post-decrypt. Decrypt-failed envelopes
 			// bypass the schema check so callers can branch on
@@ -619,8 +629,8 @@ export class AsyncRineClient implements AsyncDisposable {
 	}
 
 	/**
-	 * Fetch the both-sided, role-tagged transcript of a conversation
-	 * (REQ-SDK-TS-02). Each row is decrypted with the caller's OWN keys —
+	 * Fetch the both-sided, role-tagged transcript of a conversation.
+	 * Each row is decrypted with the caller's OWN keys —
 	 * the self-sealed copy for messages this agent sent, the recipient copy
 	 * for messages it received, the group cache for group rows. Undecryptable
 	 * rows (a legacy sent message with no self-blob, or a decrypt failure)
@@ -877,7 +887,9 @@ export class AsyncRineClient implements AsyncDisposable {
 
 	/** Release any resources held by this client. */
 	async close(): Promise<void> {
-		// No-op for now — HttpClient has no persistent connections
+		// HttpClient has no persistent connections; the only retained state is
+		// the group-decrypt memo, whose entries are decrypted plaintext.
+		this.http.decryptMemo.clear();
 	}
 
 	/** Implements `AsyncDisposable` — delegates to `close()`. */

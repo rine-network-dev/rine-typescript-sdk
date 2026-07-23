@@ -434,6 +434,29 @@ describe("inbox() — per-envelope decryption", () => {
 			expect(msg.decrypt_error).toBeNull();
 		}
 	});
+
+	it("asks for sender-key/MLS recovery on every item, like read() does", async () => {
+		// R3: `inbox()` used to decrypt without recovery, so a group row whose
+		// key material had not been ingested yet came back
+		// `decrypt_error: "unknown sender key id: …"` and never self-healed —
+		// while `read()` on the same row recovered and returned plaintext.
+		const groupRow = sampleMessageRead({
+			id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+			encryption_version: "sender-key-v1",
+			encrypted_payload: "ENC(GROUP)",
+			group_id: "33333333-3333-4333-8333-333333333333",
+		});
+		const { http } = makeHttpStub({ get: () => sampleInboxPage([groupRow]) });
+		const messages = new MessagesResource(http);
+
+		const page = await messages.inbox();
+
+		const opts = (decryptMod.decryptEnvelope as ReturnType<typeof vi.fn>).mock
+			.calls[0]?.[0] as { retrySenderKey?: boolean };
+		expect(opts.retrySenderKey).toBe(true);
+		expect(page.items[0]?.plaintext).toBe("plaintext:ok");
+		expect(page.items[0]?.decrypt_error).toBeNull();
+	});
 });
 
 // ===========================================================================
@@ -615,7 +638,7 @@ describe("reply() — encrypts to original sender", () => {
 });
 
 // ===========================================================================
-// REQ-02 (sdk-handoff-fixes) — reply() skips foreign `to_agent_id` hints
+// reply() skips foreign `to_agent_id` hints
 // ===========================================================================
 
 describe("reply() — foreign to_agent_id handling", () => {
@@ -623,7 +646,7 @@ describe("reply() — foreign to_agent_id handling", () => {
 	// `reply()` on her own message. The original carries
 	//    from_agent_id = SENDER_UUID (Alice — us)
 	//    to_agent_id   = RECIPIENT_UUID (Bob — foreign)
-	// Before REQ-02, `senderHint` picked `to_agent_id` unconditionally, and
+	// Previously, `senderHint` picked `to_agent_id` unconditionally, and
 	// `resolveSenderId()` threw "not owned by current org" because Bob is
 	// not in Alice's agents list. Post-fix, the foreign `to_agent_id` is
 	// skipped, the caller's default agent is used, and the existing
@@ -1068,7 +1091,7 @@ describe("inspect() — A2A card envelope unwrapping", () => {
 });
 
 // ===========================================================================
-// REQ-03 (sdk-handoff-fixes) — inspect() resolves handle to UUID
+// inspect() resolves handle to UUID
 // ===========================================================================
 
 describe("inspect() — handle resolution", () => {

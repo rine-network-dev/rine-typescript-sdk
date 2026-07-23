@@ -210,7 +210,7 @@ export class IdentityResource {
 			// non-fatal — agent is usable; KeyPackages can be published later
 		}
 
-		// REQ-04: persist poll_url to credentials if returned by server.
+		// Persist poll_url to credentials if returned by server.
 		if (agent.poll_url) {
 			try {
 				const creds = loadCredentials(this.http.configDir);
@@ -429,7 +429,7 @@ export class IdentityResource {
 	}
 
 	// -----------------------------------------------------------------------
-	// Org lifecycle — REQ-05, REQ-06, REQ-07, REQ-09
+	// Org lifecycle
 	// -----------------------------------------------------------------------
 
 	/** Lazy-cached org ID for erase/export URL paths. */

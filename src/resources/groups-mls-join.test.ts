@@ -129,8 +129,9 @@ describe("GroupsResource.join — MLS join wiring (Phase 6)", () => {
 	it("does NOT self-join when a Welcome already installed local state", async () => {
 		// Closed/invite enrollment: a member minted a Welcome → state exists.
 		loadMlsStateMock.mockReturnValue({
-			stateBlob: new Uint8Array([1]),
-			metadata: { groupId: GROUP_ID, epoch: 1, cipherSuite: 0x0001 },
+			groupId: GROUP_ID,
+			epoch: 1,
+			cipherSuite: 0x0001,
 		});
 		const { http } = makeHttp(MLS_GROUP_ID);
 		const groups = new GroupsResource(http, makeMessages());

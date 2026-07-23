@@ -4,10 +4,10 @@
  * Backs `ConversationScope.thread()`. Kept in its own module so the
  * already-oversized `conversation.ts` stays close to the file-size budget.
  *
- * The thread endpoint (`GET /conversations/{id}/messages`, REQ-SRV-04)
+ * The thread endpoint (`GET /conversations/{id}/messages`)
  * returns the conversation's messages in both directions, ascending, each a
  * `MessageRead` tagged with `direction` and — for the caller's own rows — the
- * `self_encrypted_payload` blob (REQ-SRV-03). For each row we pick the
+ * `self_encrypted_payload` blob. For each row we pick the
  * ciphertext the caller can actually open with its OWN keys:
  *
  *   - `direction === "sent"`     → `self_encrypted_payload` (sealed to self)
@@ -63,7 +63,7 @@ export async function fetchThread(
 			operation: "thread",
 		},
 	);
-	// The endpoint returns `{ messages, truncated }` (REQ-SRV-04) — the
+	// The endpoint returns `{ messages, truncated }` — the
 	// both-sided thread, ascending — NOT a cursor page. Parse that shape
 	// directly (`truncated` is currently informational and not surfaced).
 	const page = ConversationMessagesPageSchema.parse(raw);
@@ -145,6 +145,7 @@ async function renderRow(opts: {
 		msg: { ...row, encrypted_payload: ciphertext },
 		// Group rows may need a one-shot key-material refresh, same as inbox.
 		retrySenderKey: isGroup,
+		memo: http.decryptMemo,
 	});
 
 	// Fail-closed: an invalid sender signature is an authenticity failure, not

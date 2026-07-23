@@ -1,5 +1,5 @@
 /**
- * Standalone org registration — REQ-01, REQ-02, REQ-03.
+ * Standalone org registration.
  *
  * Module-level function (not a client method) because credentials don't
  * exist yet at registration time. Delegates to rine-core's
@@ -17,7 +17,7 @@ import {
 	ValidationError,
 } from "./errors.js";
 
-// Re-export validateSlug so SDK consumers don't need rine-core (REQ-02).
+// Re-export validateSlug so SDK consumers don't need rine-core.
 export { validateSlug };
 
 // ---------------------------------------------------------------------------

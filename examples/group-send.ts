@@ -7,7 +7,6 @@
  * key distribution path; every subsequent send reuses the cached state.
  *
  * Run: `npx tsx examples/group-send.ts '<peer-handle>' [group-name]`
- * SPEC refs: §6.3, §10.6.
  */
 
 import {

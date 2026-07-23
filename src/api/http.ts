@@ -21,6 +21,7 @@ import {
 } from "@rine-network/core";
 import { RineTimeoutError, raiseForStatus } from "../errors.js";
 import { anySignal } from "../utils/abort.js";
+import { GroupDecryptMemo } from "../utils/decrypt-memo.js";
 import { sleepWithSignal } from "../utils/sleep.js";
 import {
 	type RequestContext,
@@ -91,7 +92,7 @@ export class SDKHttpClient {
 	private readonly _timeout: number;
 	readonly maxRetries: number;
 	/**
-	 * Per-instance token refresh margin, drawn once at construction (D-4) and
+	 * Per-instance token refresh margin, drawn once at construction and
 	 * shared by the REST path and every short-lived crypto-path core client, so
 	 * co-located SDK instances desynchronize their refreshes instead of
 	 * clustering into the same minute.
@@ -105,6 +106,14 @@ export class SDKHttpClient {
 	readonly middleware: readonly RineMiddleware[];
 	/** Composed middleware pipeline. Bound once at construction. */
 	private readonly pipeline: (ctx: RequestContext) => Promise<Response>;
+	/**
+	 * Per-client memo of successful group decrypts, shared by every receive
+	 * surface (`inbox`, `read`, `sendAndWait`, `client.messages`, `thread`).
+	 * It lives here because this object is the per-client context those
+	 * surfaces already hold; it never touches the wire. `client.close()`
+	 * clears it so decrypted plaintext does not outlive the client.
+	 */
+	readonly decryptMemo = new GroupDecryptMemo();
 
 	get configDir(): string {
 		return this._configDir;

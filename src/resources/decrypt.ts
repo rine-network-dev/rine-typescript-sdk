@@ -17,6 +17,10 @@
  * `msg.decrypt_error !== null`. User cancellation (`AbortError`) is always
  * re-thrown so a cancelled `inbox()` rejects cleanly instead of resolving
  * with a page of "failed" items.
+ *
+ * Successful GROUP decrypts are recorded in the caller-supplied
+ * `GroupDecryptMemo` and replayed from it on a repeat call, because the
+ * group ratchet consumes the message key it just used.
  */
 
 import {
@@ -29,6 +33,7 @@ import {
 	syncMlsGroup,
 } from "@rine-network/core";
 import type { DecryptedMessage } from "../types.js";
+import type { GroupDecryptMemo } from "../utils/decrypt-memo.js";
 
 /**
  * Looser input shape accepted by `decryptEnvelope` and its helpers.
@@ -56,12 +61,19 @@ export interface DecryptEnvelopeOptions {
 	readonly agentId: string;
 	readonly msg: ParsedDecryptedMessage;
 	readonly retrySenderKey?: boolean;
+	/**
+	 * Per-client memo of successful group decrypts. Supplied by every SDK
+	 * receive surface so a row seen twice (inbox re-poll, read-after-inbox,
+	 * thread over a group conversation) still yields plaintext — the group
+	 * ratchet itself is single-use. See `utils/decrypt-memo.ts`.
+	 */
+	readonly memo?: GroupDecryptMemo;
 }
 
 export async function decryptEnvelope(
 	opts: DecryptEnvelopeOptions,
 ): Promise<DecryptedMessage> {
-	const { core, configDir, agentId, msg, retrySenderKey = false } = opts;
+	const { core, configDir, agentId, msg, memo, retrySenderKey = false } = opts;
 
 	const encryptedPayload = msg.encrypted_payload;
 	if (!encryptedPayload) {
@@ -90,15 +102,20 @@ export async function decryptEnvelope(
 			if (!msg.group_id) {
 				return applyDecryptError(msg, "sender-key message missing group_id");
 			}
+			// A group ratchet step is single-use, so a row already opened by
+			// this client is replayed from the memo instead of re-derived.
+			const memoized = memo?.get(agentId, msg.id);
+			if (memoized) return applyDecryptResult(msg, memoized);
+
+			let result: DecryptResult;
 			try {
-				const result = await decryptGroupMessage(
+				result = await decryptGroupMessage(
 					configDir,
 					agentId,
 					msg.group_id,
 					encryptedPayload,
 					core,
 				);
-				return applyDecryptResult(msg, result);
 			} catch (firstErr) {
 				rethrowIfAbort(firstErr);
 				if (!retrySenderKey) {
@@ -122,14 +139,13 @@ export async function decryptEnvelope(
 							agentId,
 						);
 					}
-					const retry = await decryptGroupMessage(
+					result = await decryptGroupMessage(
 						configDir,
 						agentId,
 						msg.group_id,
 						encryptedPayload,
 						core,
 					);
-					return applyDecryptResult(msg, retry);
 				} catch (retryErr) {
 					rethrowIfAbort(retryErr);
 					return applyDecryptError(
@@ -139,6 +155,8 @@ export async function decryptEnvelope(
 					);
 				}
 			}
+			memo?.set(agentId, msg.id, result);
+			return applyDecryptResult(msg, result);
 		}
 
 		// Unknown `encryption_version` surfaces an explicit `decrypt_error`

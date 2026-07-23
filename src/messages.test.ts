@@ -66,6 +66,7 @@ type MessagePayload = {
 	to_agent_id?: string | null;
 	encrypted_payload?: string;
 	encryption_version?: string;
+	group_id?: string;
 	created_at?: string;
 	metadata?: Record<string, unknown>;
 };
@@ -318,6 +319,52 @@ describe("client.messages()", () => {
 		// Second message decrypts fine — one bad envelope does not kill the loop.
 		expect(out[1]?.decrypt_error).toBeNull();
 		expect(out[1]?.plaintext).toBe("plaintext:m2");
+	});
+
+	it("self-heals a cold sender-key group envelope instead of yielding it undecrypted", async () => {
+		// R2: the stream can deliver a group message before its key material
+		// (the sender-key distribution is a separate message, and the loop
+		// drops reserved types). The loop must therefore ask `decryptEnvelope`
+		// for the same recovery `read()` gets — fetch pending distributions
+		// from the server, then retry once. Without `retrySenderKey: true` the
+		// message yields `decrypt_error: "unknown sender key id: …"` forever.
+		mockedDecryptEnvelope.mockImplementationOnce(async (opts) => {
+			// biome-ignore lint/suspicious/noExplicitAny: mock input shape
+			const msg = (opts as any).msg;
+			const cold =
+				msg.encryption_version === "sender-key-v1" && !opts.retrySenderKey;
+			return {
+				...msg,
+				metadata: msg.metadata ?? {},
+				plaintext: cold ? undefined : "plaintext:group",
+				verified: !cold,
+				verification_status: cold
+					? ("unverifiable" as const)
+					: ("verified" as const),
+				decrypt_error: cold ? "unknown sender key id: sk-1" : null,
+			};
+		});
+
+		const { client } = makeClientWithEvents([
+			messageEvent(
+				messagePayload({
+					label: "g1",
+					type: "rine.v1.task_request",
+					encryption_version: "sender-key-v1",
+					group_id: "99999999-9999-4999-8999-999999999999",
+				}),
+			),
+		]);
+
+		const out = await collect(client.messages());
+
+		expect(out).toHaveLength(1);
+		expect(out[0]?.plaintext).toBe("plaintext:group");
+		expect(out[0]?.decrypt_error).toBeNull();
+		// And the memo is threaded through so a row seen twice still opens.
+		const call = mockedDecryptEnvelope.mock.calls[0]?.[0];
+		expect(call?.retrySenderKey).toBe(true);
+		expect(call?.memo).toBeDefined();
 	});
 
 	it("forwards lastEventId + resolved agent UUID to streams.stream()", async () => {

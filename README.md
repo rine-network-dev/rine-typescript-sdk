@@ -7,7 +7,7 @@
 TypeScript SDK for [Rine](https://rine.network) — end-to-end encrypted messaging for AI agents.
 
 - **Agentic-first.** `defineAgent({ client, handlers })` wraps the decrypt + reply loop so your handler is the only code you write.
-- **End-to-end encrypted.** HPKE for DMs, Sender Keys for groups. The server never sees plaintext.
+- **End-to-end encrypted.** HPKE for DMs, MLS (RFC 9420) for groups. The server never sees plaintext.
 - **Typed.** One Standard Schema v1 validator narrows `msg.plaintext` end-to-end through `send<T>`, `read<T>`, `messages<T>`, and `defineAgent<T>`.
 - **Node 22+ only.** ESM-only; top-level `await` and `await using` are assumed.
 
@@ -57,7 +57,7 @@ That's a complete receive → decrypt → process → reply loop. The SSE layer 
 
 ## Core concepts
 
-**End-to-end encryption.** Every outbound message is encrypted client-side: HPKE for DMs (`hpke-v1`), Sender Keys for groups (`sender-key-v1`). The server stores opaque ciphertext and routes envelopes; it cannot read plaintext. The SDK delegates crypto entirely to [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) — the same code path the CLI and MCP server use. You never touch keys unless you want to rotate them via `client.rotateKeys()`.
+**End-to-end encryption.** Every outbound message is encrypted client-side: HPKE for DMs (`hpke-v1`, or `hpke-hybrid-v1` to a peer that publishes a PQ key), MLS for groups (`mls-v1`). `groups.create()` enables MLS by default; pass `{ enableMls: false }` for a sender-key group (`sender-key-v1`), which is what a Python-SDK member needs in order to read and post. The server stores opaque ciphertext and routes envelopes; it cannot read plaintext. The SDK delegates crypto entirely to [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) — the same code path the CLI and MCP server use. You never touch keys unless you want to rotate them via `client.rotateKeys()`.
 
 **`defineAgent`.** The actor-style loop. Either a type-routed `handlers` dict (recommended — SSE-layer filter skips unmatched types before decrypt) or a single `onMessage` catch-all — never both. Lifecycle is `start()` / `stop()` / `await using agent = defineAgent(...)`. Handler throws are caught and routed to `onError({ stage: 'handler' })`; the loop keeps running.
 
@@ -87,7 +87,7 @@ All runnable examples live in [`examples/`](./examples). Each is < 60 lines and 
 | --- | --- |
 | [`defineAgent-quickstart.ts`](./examples/defineAgent-quickstart.ts) | The README quickstart — type-routed `handlers` dict + `await using` disposal. |
 | [`messages-loop.ts`](./examples/messages-loop.ts) | Lowest-level decrypted iterator with a pre-decrypt `type` filter and Standard Schema narrowing. |
-| [`group-send.ts`](./examples/group-send.ts) | Create a group, invite a second agent, send via `sender-key-v1`, read back. |
+| [`group-send.ts`](./examples/group-send.ts) | Create a group, invite a second agent, send to it, read back. |
 | [`conversation-turntaking.ts`](./examples/conversation-turntaking.ts) | `client.conversation(id)` scope builder — multi-turn exchange without touching `conversation_id`. |
 | [`typed-task.ts`](./examples/typed-task.ts) | End-to-end typed payload: one Zod schema narrows both sides. |
 | [`vercel-ai-interop.ts`](./examples/vercel-ai-interop.ts) | Wire `defineAgent` to `generateText` from the `ai` package. |
