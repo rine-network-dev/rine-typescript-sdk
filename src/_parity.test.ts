@@ -53,6 +53,24 @@ interface SurfaceEntry {
 	readonly location: Location;
 	/** Minimum required positional parameters. */
 	readonly minArity: number;
+	/**
+	 * What THIS package calls the method, when it is not `name` camel-cased.
+	 *
+	 * `name` is the canonical registry key and stays the Python client's, so a
+	 * method that exists on both stacks under two spellings is one row and not
+	 * two — a second row keyed on the TS name would let either side be deleted
+	 * with the registry still reading complete.
+	 *
+	 * 🔴 An `as` value records a divergence that has already been RATIFIED,
+	 * never one a lane is introducing. Editing this string is how a rename stops
+	 * being visible here: the row keeps reading "both stacks have it" while the
+	 * two published SDKs have drifted apart, because the derivation from `name`
+	 * is what used to be the assertion. Renaming a public method on one stack is
+	 * a published-API change and belongs in that package's CHANGELOG and in the
+	 * phase's user-visible list — if neither mentions it, the rename is the
+	 * defect and this field is not the place to absorb it.
+	 */
+	readonly as?: string;
 }
 
 const REGISTRY: readonly SurfaceEntry[] = [
@@ -95,6 +113,24 @@ const REGISTRY: readonly SurfaceEntry[] = [
 	{ name: "update_conversation_status", location: "client", minArity: 2 },
 	{ name: "get_conversation", location: "client", minArity: 1 },
 	{ name: "get_conversation_participants", location: "client", minArity: 1 },
+	// Both stacks take the conversation id and every filter optionally, so the
+	// lower bound is 0 and what this row actually binds is that the METHOD
+	// exists on both clients under the same name. `thread` is the only read
+	// verb the recipient work reaches that was never registered.
+	{ name: "thread", location: "client", minArity: 0 },
+
+	// Reference resolution — the three doors of `recipient-resolution.ts` /
+	// `_recipient.py`. Python publishes all three on the client; this package
+	// publishes the two group ones on `client.groups` under its own names, and
+	// none for the send slot (see DEFERRED).
+	{ name: "resolve_group", location: "groups", minArity: 1, as: "resolveRef" },
+	{
+		name: "resolve_group_for_join",
+		location: "groups",
+		minArity: 1,
+		as: "resolveRefForJoin",
+	},
+	{ name: "resolve_recipient", location: "client", minArity: 1 },
 
 	// Groups — methods on client.groups.*
 	{ name: "create", location: "groups", minArity: 1 },
@@ -136,6 +172,14 @@ const DEFERRED: ReadonlySet<string> = new Set([
 	"update_conversation_status",
 	"get_conversation",
 	"get_conversation_participants",
+
+	// The send slot's door. `rine.Client.resolve_recipient()` is public on the
+	// Python SDK; here the resolve happens INSIDE `send()`, and nothing on this
+	// client hands the record back. Publishing it is a surface decision — it
+	// would be this SDK's third resolve verb and its first that can answer in
+	// either namespace — and not a drift for a smoke test to close. The two
+	// group doors above ARE published, so the deferral is one method wide.
+	"resolve_recipient",
 
 	// Names that have been removed from the public surface.
 	"encrypt_dm",
@@ -193,7 +237,7 @@ describe("client API surface stability", () => {
 
 	for (const entry of REGISTRY) {
 		const { name, location, minArity } = entry;
-		const camel = snakeToCamel(name);
+		const camel = entry.as ?? snakeToCamel(name);
 		const label = `${location === "client" ? "client" : `client.${location}`}.${camel}`;
 
 		if (DEFERRED.has(name)) {

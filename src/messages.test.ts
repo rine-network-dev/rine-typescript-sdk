@@ -322,7 +322,7 @@ describe("client.messages()", () => {
 	});
 
 	it("self-heals a cold sender-key group envelope instead of yielding it undecrypted", async () => {
-		// R2: the stream can deliver a group message before its key material
+		// The stream can deliver a group message before its key material
 		// (the sender-key distribution is a separate message, and the loop
 		// drops reserved types). The loop must therefore ask `decryptEnvelope`
 		// for the same recovery `read()` gets — fetch pending distributions

@@ -17,6 +17,9 @@ const decryptMessageMock = vi.fn();
 const decryptGroupMessageMock = vi.fn();
 const fetchSKMock = vi.fn();
 
+/** The server-authenticated sender of every fixture row below. */
+const SENDER_ID = "22222222-2222-4222-8222-222222222222";
+
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const original = (await importOriginal()) as Record<string, unknown>;
 	return {
@@ -38,6 +41,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 	};
 });
 
+// The real error class (the mock spreads the original module), so the group
+// fixtures below reject with what `decryptGroupMessage` actually throws.
+const { GroupAuthenticityError } = await import("@rine-network/core");
 const { GroupsResource } = await import("./resources/groups.js");
 const { WebhooksResource } = await import("./resources/webhooks.js");
 const { PollingResource } = await import("./resources/polling.js");
@@ -196,14 +202,17 @@ describe("GroupsResource", () => {
 		expect(typeof body.name).toBe("string");
 	});
 
-	it("create() defaults visibility to 'private' when no opts are given", async () => {
-		// Bare create('name') must always include visibility on the wire — the
-		// server requires it with no default and returns 422 if absent.
+	it("create() refuses a bare create('name') with no visibility", async () => {
+		// There is no default. Omitting visibility is a compile error
+		// for a TypeScript caller (pinned in groups-visibility.test.ts) and this
+		// refusal for a JavaScript one — never a silently-chosen product.
 		const { http, calls } = makeHttpStub(() => sampleGroup());
 		const groups = new GroupsResource(http);
-		await groups.create("bare-group");
-		const body = calls[0]?.body as Record<string, unknown>;
-		expect(body["visibility"]).toBe("private");
+		await expect(
+			// @ts-expect-error visibility is required — this is the JS caller.
+			groups.create("bare-group"),
+		).rejects.toThrow(/visibility/);
+		expect(calls).toHaveLength(0);
 	});
 
 	it("create() preserves an explicit visibility:'public'", async () => {
@@ -212,6 +221,35 @@ describe("GroupsResource", () => {
 		await groups.create("public-group", { visibility: "public" });
 		const body = calls[0]?.body as Record<string, unknown>;
 		expect(body["visibility"]).toBe("public");
+	});
+
+	it("create() sends the vote window under the same wire name update() uses", async () => {
+		// The window was settable only after the fact, so a majority group
+		// spent its first vote on the 72h default whatever the founder asked
+		// for. One spelling on both verbs, or the round trip lies.
+		const { http, calls } = makeHttpStub(() => sampleGroup());
+		const groups = new GroupsResource(http);
+		await groups.create("voted-group", {
+			visibility: "private",
+			enrollment: "majority",
+			voteDurationHours: 6,
+		});
+		expect(calls[0]?.body).toEqual({
+			name: "voted-group",
+			visibility: "private",
+			enrollment_policy: "majority",
+			vote_duration_hours: 6,
+		});
+	});
+
+	it("create() omits the vote window when the caller states none", async () => {
+		const { http, calls } = makeHttpStub(() => sampleGroup());
+		const groups = new GroupsResource(http);
+		await groups.create("quiet-group", { visibility: "private" });
+		expect(calls[0]?.body).toEqual({
+			name: "quiet-group",
+			visibility: "private",
+		});
 	});
 
 	it("get() GETs /groups/{id}", async () => {
@@ -538,6 +576,7 @@ describe("decryptEnvelope dispatch", () => {
 			msg: {
 				id: "msg-1",
 				conversation_id: "c1",
+				from_agent_id: SENDER_ID,
 				type: "rine.v1.task_request",
 				encrypted_payload: "ENC",
 				encryption_version: "hpke-v1",
@@ -563,6 +602,7 @@ describe("decryptEnvelope dispatch", () => {
 			msg: {
 				id: "msg-2",
 				conversation_id: "c1",
+				from_agent_id: SENDER_ID,
 				group_id: "33333333-3333-4333-8333-333333333333",
 				type: "rine.v1.task_request",
 				encrypted_payload: "ENC",
@@ -591,6 +631,7 @@ describe("decryptEnvelope dispatch", () => {
 			msg: {
 				id: "msg-3",
 				conversation_id: "c1",
+				from_agent_id: SENDER_ID,
 				group_id: "33333333-3333-4333-8333-333333333333",
 				type: "rine.v1.task_request",
 				encrypted_payload: "ENC",
@@ -613,6 +654,7 @@ describe("decryptEnvelope dispatch", () => {
 			msg: {
 				id: "msg-4",
 				conversation_id: "c1",
+				from_agent_id: SENDER_ID,
 				type: "rine.v1.task_request",
 				encrypted_payload: "ENC",
 				encryption_version: "mystery",
@@ -631,6 +673,7 @@ describe("decryptEnvelope dispatch", () => {
 			msg: {
 				id: "msg-5",
 				conversation_id: "c1",
+				from_agent_id: SENDER_ID,
 				type: "rine.v1.task_request",
 				encrypted_payload: "",
 				encryption_version: "hpke-v1",
@@ -653,6 +696,7 @@ describe("decryptEnvelope plaintext auto-parse", () => {
 		return {
 			id: "msg-ap",
 			conversation_id: "c1",
+			from_agent_id: SENDER_ID,
 			type: "rine.v1.task_request",
 			content_type: contentType,
 			encrypted_payload: "ENC",
@@ -679,7 +723,7 @@ describe("decryptEnvelope plaintext auto-parse", () => {
 
 	it("defaults to JSON when content_type is missing", async () => {
 		decryptMessageMock.mockResolvedValue({
-			plaintext: '[1,2,3]',
+			plaintext: "[1,2,3]",
 			verified: true,
 			verificationStatus: "verified",
 		});
@@ -737,5 +781,207 @@ describe("decryptEnvelope plaintext auto-parse", () => {
 			msg: makeMsg("application/json"),
 		});
 		expect(out.plaintext).toBe("hello");
+	});
+});
+
+// ===========================================================================
+// decryptEnvelope — sender binding
+// ===========================================================================
+
+describe("decryptEnvelope sender binding", () => {
+	const agentId = "11111111-1111-4111-8111-111111111111";
+	const coreStub = {} as import("@rine-network/core").HttpClient;
+
+	function row(over: Record<string, unknown> = {}): never {
+		return {
+			id: "msg-b1",
+			conversation_id: "c1",
+			from_agent_id: SENDER_ID,
+			type: "rine.v1.task_request",
+			encrypted_payload: "ENC",
+			encryption_version: "hpke-v1",
+			created_at: "2026-04-11T12:00:00Z",
+			...over,
+		} as never;
+	}
+
+	it("hands the 1:1 decrypt the sender the server authenticated", async () => {
+		decryptMessageMock.mockResolvedValue({
+			plaintext: "hi",
+			senderKid: `rine:${SENDER_ID}`,
+			verified: true,
+			verificationStatus: "verified",
+		});
+
+		await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row(),
+		});
+
+		// The expected sender comes from the row, never from the envelope.
+		expect(decryptMessageMock.mock.calls[0]?.[4]).toBe(SENDER_ID);
+	});
+
+	it("hands the group decrypt the sender the server authenticated", async () => {
+		decryptGroupMessageMock.mockResolvedValue({
+			plaintext: "group-hi",
+			senderKid: `rine:${SENDER_ID}`,
+			verified: true,
+			verificationStatus: "verified",
+		});
+
+		await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row({
+				encryption_version: "sender-key-v1",
+				group_id: "33333333-3333-4333-8333-333333333333",
+			}),
+		});
+
+		expect(decryptGroupMessageMock.mock.calls[0]?.[5]).toBe(SENDER_ID);
+	});
+
+	it("leaves a row with no server-authenticated sender closed", async () => {
+		const out = await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row({ from_agent_id: undefined }),
+		});
+
+		expect(out.plaintext).toBeUndefined();
+		expect(out.verified).toBe(false);
+		expect(out.verification_status).toBe("unverifiable");
+		expect(out.decrypt_error).toMatch(/from_agent_id/);
+		// No decrypt is attempted at all — there is nothing to check the
+		// envelope's claim of authorship against.
+		expect(decryptMessageMock).not.toHaveBeenCalled();
+	});
+
+	it("refuses a misattributed 1:1 row with the verdict and a reason", async () => {
+		// What core returns for a 1:1 authenticity failure: the verdict and the
+		// sender kid, and no content. The SDK turns that into the same refusal
+		// shape a group failure has, so one branch covers both.
+		decryptMessageMock.mockResolvedValue({
+			senderKid: `rine:${SENDER_ID}`,
+			verified: false,
+			verificationStatus: "sender-mismatch",
+		});
+
+		const out = await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row(),
+		});
+
+		expect(out.plaintext).toBeUndefined();
+		expect(out.verified).toBe(false);
+		expect(out.verification_status).toBe("sender-mismatch");
+		// A refusal is distinguishable from a transient failure by its verdict,
+		// and readable on its own by its reason.
+		expect(out.decrypt_error).toBe(
+			"Envelope sender does not match the message sender",
+		);
+	});
+
+	it("refuses a 1:1 row whose signature does not check out", async () => {
+		decryptMessageMock.mockResolvedValue({
+			senderKid: `rine:${SENDER_ID}`,
+			verified: false,
+			verificationStatus: "invalid",
+		});
+
+		const out = await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row(),
+		});
+
+		expect(out.plaintext).toBeUndefined();
+		expect(out.verification_status).toBe("invalid");
+		expect(out.decrypt_error).toBe("Sender signature verification failed");
+	});
+
+	it("leaves an honest 1:1 row untouched", async () => {
+		decryptMessageMock.mockResolvedValue({
+			plaintext: "hi",
+			senderKid: `rine:${SENDER_ID}`,
+			verified: true,
+			verificationStatus: "verified",
+		});
+
+		const out = await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row(),
+		});
+
+		expect(out.plaintext).toBe("hi");
+		expect(out.verified).toBe(true);
+		expect(out.verification_status).toBe("verified");
+		expect(out.decrypt_error).toBeNull();
+	});
+
+	it("reports a misattributed group turn as sender-mismatch, not a generic failure", async () => {
+		decryptGroupMessageMock.mockRejectedValue(
+			new GroupAuthenticityError("sender-mismatch"),
+		);
+
+		const out = await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row({
+				encryption_version: "sender-key-v1",
+				group_id: "33333333-3333-4333-8333-333333333333",
+			}),
+		});
+
+		expect(out.verification_status).toBe("sender-mismatch");
+		expect(out.verified).toBe(false);
+		expect(out.plaintext).toBeUndefined();
+	});
+
+	it("keeps tampered bytes distinguishable from a misattributed turn", async () => {
+		decryptGroupMessageMock.mockRejectedValue(
+			new GroupAuthenticityError("invalid"),
+		);
+
+		const out = await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row({
+				encryption_version: "sender-key-v1",
+				group_id: "33333333-3333-4333-8333-333333333333",
+			}),
+		});
+
+		expect(out.verification_status).toBe("invalid");
+	});
+
+	it("surfaces the signing key id verification read off the envelope", async () => {
+		decryptMessageMock.mockResolvedValue({
+			plaintext: "hi",
+			senderKid: `rine:${SENDER_ID}`,
+			verified: true,
+			verificationStatus: "verified",
+		});
+
+		const out = await decryptEnvelope({
+			core: coreStub,
+			configDir: "/tmp",
+			agentId,
+			msg: row(),
+		});
+
+		expect(out.sender_kid).toBe(`rine:${SENDER_ID}`);
 	});
 });

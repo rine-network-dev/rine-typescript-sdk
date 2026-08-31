@@ -15,8 +15,10 @@
  *
  * This proves the gate behavior directly: a real two-turn 1:1 thread decrypts
  * BOTH sides (sent from the self-seal blob, received from the recipient blob),
- * ordered; and a sent row with `self_encrypted_payload: null` renders
- * `[unavailable]` without throwing. The fixtures mirror the Python SDK's
+ * ordered; a sent row with `self_encrypted_payload: null` renders
+ * `[unavailable]` without throwing; and a refused row — a signature that does
+ * not check out, or one naming an agent other than the row's sender — renders
+ * `[unavailable]` carrying its verdict. The fixtures mirror the Python SDK's
  * `test_thread.py::TestThread` so both SDKs are proven against identical data.
  */
 
@@ -38,6 +40,8 @@ import type { MessageRead } from "../types.js";
 const CONV_ID = "e5f6a7b8-c9d0-4234-efab-345678901234";
 const SELF_ID = "a1b2c3d4-e5f6-4890-abcd-ef1234567890";
 const PEER_ID = "b2c3d4e5-f6a7-4901-bcde-f12345678901";
+/** A peer that re-seals another agent's signed envelope and posts it as its own. */
+const RESEALER_ID = "c3d4e5f6-a7b8-4012-cdef-123456789012";
 
 let dir: string;
 let selfKeys: AgentKeys;
@@ -58,8 +62,16 @@ afterEach(() => {
 	vi.clearAllMocks();
 });
 
-/** In-memory `/agents/{id}/keys` answerer for sender-signature verification. */
-function keysCore(): CoreHttpClient {
+/**
+ * In-memory `/agents/{id}/keys` answerer for sender-signature verification.
+ *
+ * `publishedSigning` overrides the signing key an agent publishes, so a row can
+ * be signed by one key and checked against another — what a recipient sees when
+ * the signature does not check out.
+ */
+function keysCore(
+	publishedSigning: Map<string, AgentKeys> = new Map(),
+): CoreHttpClient {
 	const store = new Map<string, AgentKeys>([
 		[SELF_ID, selfKeys],
 		[PEER_ID, peerKeys],
@@ -68,11 +80,13 @@ function keysCore(): CoreHttpClient {
 		get: vi.fn(async (p: string) => {
 			const m = p.match(/^\/agents\/([^/]+)\/keys$/);
 			if (!m) throw new Error(`unexpected path: ${p}`);
-			const keys = store.get(m[1] as string);
-			if (!keys) throw new Error(`unknown agent: ${m[1]}`);
+			const id = m[1] as string;
+			const keys = store.get(id);
+			if (!keys) throw new Error(`unknown agent: ${id}`);
+			const signing = publishedSigning.get(id) ?? keys;
 			return {
-				agent_id: m[1],
-				signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
+				agent_id: id,
+				signing_public_key: signingPublicKeyToJWK(signing.signing.publicKey),
 				encryption_public_key: {
 					kty: "OKP",
 					crv: "X25519",
@@ -83,15 +97,21 @@ function keysCore(): CoreHttpClient {
 	} as unknown as CoreHttpClient;
 }
 
-function makeClient(rows: MessageRead[]): InstanceType<typeof AsyncRineClient> {
-	const client = new AsyncRineClient({ agent: "me@acme.rine.network", configDir: dir });
+function makeClient(
+	rows: MessageRead[],
+	publishedSigning?: Map<string, AgentKeys>,
+): InstanceType<typeof AsyncRineClient> {
+	const client = new AsyncRineClient({
+		agent: "me@acme.rine.network",
+		configDir: dir,
+	});
 	// biome-ignore lint/suspicious/noExplicitAny: test override
 	(client as any).http.get = vi.fn(async () => ({
 		messages: rows,
 		truncated: false,
 	}));
 	// biome-ignore lint/suspicious/noExplicitAny: test override
-	(client as any).http.getCoreHttpClient = () => keysCore();
+	(client as any).http.getCoreHttpClient = () => keysCore(publishedSigning);
 	// biome-ignore lint/suspicious/noExplicitAny: test override
 	(client as any).messagingResource.resolveSenderId = vi
 		.fn()
@@ -99,7 +119,9 @@ function makeClient(rows: MessageRead[]): InstanceType<typeof AsyncRineClient> {
 	return client;
 }
 
-function row(over: Partial<MessageRead> & Pick<MessageRead, "type">): MessageRead {
+function row(
+	over: Partial<MessageRead> & Pick<MessageRead, "type">,
+): MessageRead {
 	return {
 		id: crypto.randomUUID(),
 		conversation_id: CONV_ID,
@@ -182,5 +204,67 @@ describe("thread() real-crypto round-trip (integration)", () => {
 
 		expect(out).toHaveLength(1);
 		expect(out[0]?.text).toBe("[unavailable]");
+	});
+
+	it("refuses a received turn whose signature does not check out", async () => {
+		// Mirrors `test_thread.py::TestThread::test_async_thread_forged_signature_is_unavailable`:
+		// the peer publishes a signing key that is not the key that signed the row.
+		const received = await encryptMessage(
+			dir,
+			PEER_ID,
+			selfKeys.encryption.publicKey,
+			{ text: "got it, albatross noted" },
+		);
+		const rows = [
+			row({
+				type: "rine.v1.task_response",
+				direction: "received",
+				from_agent_id: PEER_ID,
+				to_agent_id: SELF_ID,
+				sender_handle: "peer@acme.rine.network",
+				encrypted_payload: received.encrypted_payload,
+			}),
+		];
+
+		const out = await makeClient(
+			rows,
+			new Map([[PEER_ID, generateAgentKeys()]]),
+		)
+			.conversation(CONV_ID)
+			.thread();
+
+		expect(out[0]?.text).toBe("[unavailable]");
+		expect(out[0]?.text).not.toContain("albatross");
+		// "invalid", not the default "unverifiable" — the same verdict the Python
+		// SDK reports for this row, so both transcripts read alike.
+		expect(out[0]?.verificationStatus).toBe("invalid");
+	});
+
+	it("refuses a received turn signed by an agent other than its sender", async () => {
+		// The peer's genuinely signed bytes, re-sealed by a third agent and posted
+		// as its own: the server authenticates the resealer, the envelope names the
+		// peer. Nobody is accountable for the content, so it never renders.
+		const received = await encryptMessage(
+			dir,
+			PEER_ID,
+			selfKeys.encryption.publicKey,
+			{ text: "got it, albatross noted" },
+		);
+		const rows = [
+			row({
+				type: "rine.v1.task_response",
+				direction: "received",
+				from_agent_id: RESEALER_ID,
+				to_agent_id: SELF_ID,
+				sender_handle: "resealer@acme.rine.network",
+				encrypted_payload: received.encrypted_payload,
+			}),
+		];
+
+		const out = await makeClient(rows).conversation(CONV_ID).thread();
+
+		expect(out[0]?.text).toBe("[unavailable]");
+		expect(out[0]?.text).not.toContain("albatross");
+		expect(out[0]?.verificationStatus).toBe("sender-mismatch");
 	});
 });

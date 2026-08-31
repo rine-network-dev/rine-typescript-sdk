@@ -177,7 +177,7 @@ describe("IdentityResource.createAgent", () => {
 	});
 
 	it("uploads the post-quantum encryption public key as an ML-KEM JWK", async () => {
-		// H1 regression: createAgent omitted pq_encryption_public_key entirely,
+		// Regression: createAgent omitted pq_encryption_public_key entirely,
 		// so the server never learned the agent's ML-KEM key and could not
 		// advertise it to senders — silently disabling hpke-hybrid-v1.
 		const { http, posts } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
@@ -319,7 +319,7 @@ describe("IdentityResource.rotateKeys", () => {
 	});
 
 	it("uploads a fresh ML-KEM public key on rotation", async () => {
-		// H1 regression: rotateKeys also omitted pq_encryption_public_key, so a
+		// Regression: rotateKeys also omitted pq_encryption_public_key, so a
 		// post-rotation agent silently lost its ability to receive hpke-hybrid-v1.
 		const { http, posts } = makeHttpStub(configDir, sampleAgentRead(AGENT_ID));
 		const identity = new IdentityResource(http);

@@ -28,6 +28,7 @@ export type {
 	InboxOptions,
 	ReadOptions,
 	ReplyOptions,
+	ThreadOptions,
 	StreamOptions,
 	WatchOptions,
 	MessagesOptions,
@@ -56,6 +57,11 @@ export type {
 	EraseOrgOptions,
 	AgentCardInput,
 } from "./resources/identity.js";
+// `client.agentHandles()`'s return type. Exported because a host that renders
+// `member_agent_ids` threads the map through its own renderers and has to name
+// it — `rine-mastra` and `rine-eve` both do. The rule those renderers follow is
+// stated on the type itself.
+export type { AgentHandleMap } from "./resources/agent-handles.js";
 // SPIFFE identity verification result + client-side error, re-exported from
 // rine-core so SDK callers can type results and `instanceof`-branch failures.
 export type { VerifyIdentityResult } from "@rine-network/core";
@@ -64,9 +70,66 @@ export type {
 	DiscoveryFilters,
 	DiscoverGroupsOptions,
 } from "./resources/discovery.js";
+// Every public shape a group call can return, and the one refusal a caller has
+// to branch on. Absent from this file, a third-party consumer could not name
+// the return type of `groups.invite([...])` or `groups.removeMember()`, and
+// could not `instanceof`- or predicate-branch the evicted-agent refusal — only
+// match on message text. That gap had already produced two independent
+// re-declarations of the admission report shape in packages that consume this
+// SDK.
 export type {
+	GroupAdmissionEntry,
+	GroupAdmissionReport,
+	GroupAdmissionSkipReason,
 	GroupCreateOptions,
+	GroupCreateResult,
+	GroupInviteReport,
+	// What `groups.sync()` actually returns: the union, not one of its arms. A
+	// caller that can only name `MlsRecoveryResult` cannot type the result at
+	// all, and would narrow by which fields are present — the exact reading the
+	// `regime` discriminant exists to stop.
+	GroupRecoveryResult,
+	GroupRemovalResult,
 	GroupUpdateOptions,
+	InviteOptions,
+	MlsAdmissionResult,
+	MlsInitFailure,
+	MlsReclamationDecline,
+	MlsReclamationDeclineReason,
+	MlsReclamationResult,
+	MlsRecoveryResult,
+	OutstandingFilter,
+	SenderKeyRecoveryResult,
+} from "./resources/groups.js";
+// The per-agent halves of an admission result. Without them a caller can hold
+// `GroupCreateResult.mlsAdmission` and still not name what it iterates, which
+// is the gap that produced two re-declarations of the report shape.
+export type {
+	MlsAdmissionOutcome,
+	MlsAdmissionSkipReason,
+} from "@rine-network/core";
+// What `groups.resolveRef()` answers with, and what the verbs that read a group
+// accept. Both have to be nameable: a consumer that stores a resolved group, or
+// writes a helper taking "a group", cannot type either without them — and
+// `GroupSelector` is the type that says which verbs take the record and which
+// take the id alone.
+export type {
+	GroupSelector,
+	ResolvedGroup,
+} from "./resources/groups-resolve.js";
+// `groups.sync()` is subject to the same rule: without its error class and
+// predicate here, a consumer can only match the refusal on the raw code string
+// and cannot name what the verb returns.
+export {
+	GROUP_EVICTED_CODE,
+	GroupEvictedError,
+	MlsResyncUnavailableError,
+	VISIBILITY_REQUIRED_MESSAGE,
+	admissionHeadline,
+	groupAdmissionSkipSentence,
+	isGroupEvictedError,
+	isMlsResyncUnavailable,
+	mlsAdmissionSkipSentence,
 } from "./resources/groups.js";
 
 // ---------------------------------------------------------------------------
@@ -151,10 +214,7 @@ export type {
 	RineOperation,
 	LoggingMiddlewareOptions,
 } from "./api/middleware.js";
-export {
-	composeMiddleware,
-	loggingMiddleware,
-} from "./api/middleware.js";
+export { composeMiddleware, loggingMiddleware } from "./api/middleware.js";
 
 // ---------------------------------------------------------------------------
 // Standard Schema v1 integration
@@ -186,7 +246,93 @@ export {
 	CryptoError,
 	ConfigError,
 	SchemaValidationError,
+	GroupIdentityMismatchError,
+	// Client-side, before the encrypt: the acting agent is not the addressee of
+	// the message being answered. Carries the three ids so a caller can retry as
+	// the addressee without reading the sentence.
+	ReplyAttributionError,
+	// Which refusal a `RineApiError` is, without matching on its sentence. The
+	// vote route answers two different 403s (`not_in_electorate` and
+	// `electorate_empty`) and a caller that cannot tell them apart can only
+	// string-match the detail, which is exactly what the code exists to stop.
+	rineErrorCode,
 } from "./errors.js";
+
+// The two refusals `messages.send()` raises for a group are declared in
+// `rine-core` — one definition serves the CLI, the MCP server and this SDK —
+// and are re-exported here so an SDK-only consumer never has to depend on
+// `@rine-network/core` to branch on them. Both are `instanceof RineError`.
+// Branch on the CODE or the predicate; the message text is for an operator.
+//
+// 🔴 `isGroupIdentityMismatchError` is here for a sharper reason:
+// `groups.resolveRef` resolves through `rine-core`'s UUID rung, so the
+// substitution refusal a consumer catches there is minted by `rine-core`. There
+// is exactly one class of that name — this package re-exports the core one
+// rather than declaring a second — so `instanceof
+// GroupIdentityMismatchError` is true for it and for `groups.get`'s throw
+// alike, and `instanceof RineError` is true for both as well, on the base
+// widening `errors-core-refusals.ts` holds. The predicate stays exported for
+// the consumer who would rather branch on a stable code than on a class.
+export {
+	DOWNGRADE_REFUSED_CODE,
+	GROUP_IDENTITY_MISMATCH_CODE,
+	MLS_INIT_IN_FLIGHT_CODE,
+	MLS_PENDING_SELF_CLEAR_SECONDS,
+	MlsDowngradeError,
+	MlsInitInFlightError,
+	isGroupIdentityMismatchError,
+	isMlsDowngradeError,
+	isMlsInitInFlightError,
+} from "@rine-network/core";
+
+// How a join request is decided, in the one sentence every rine surface
+// renders, and what an invite to a group under a given policy actually does.
+// Both are declared in `rine-core` — the CLI and the MCP server reach them
+// without this SDK — and re-exported here for the same reason the two refusals
+// above are: an SDK-only consumer must not have to add a second dependency to
+// render the rule its own `groups.vote()` is governed by, and a consumer that
+// re-words the sentence itself is how a model comes to believe a rule the
+// server does not implement.
+export { VOTE_ELECTORATE_RULE, inviteNominates } from "@rine-network/core";
+
+// The two sentences a group refusal carries its own answer in. `matchGroupByName`
+// lists the org's groups inline when a reference resolves to none of them, and
+// `NO_GROUPS_IN_ORG` is the arm for an org that holds a seat nowhere.
+//
+// Re-exported because a wrapper surface has to branch on them to know when NOT
+// to say "run the verb that lists your groups": naming that verb underneath its
+// own output is advice to fetch what the caller is already reading, and models
+// were measured parroting that hint back instead of acting on it. Imported,
+// never retyped — a wrapper that restates the sentence goes silently stale the
+// day this one is reworded, and its own suite reads green either way.
+export { GROUP_ROSTER_LEAD, NO_GROUPS_IN_ORG } from "@rine-network/core";
+
+// The vocabulary of the one decrypt failure that has something for the reader
+// to do about it, and the render policy that keeps it from becoming noise.
+// Re-exported for the same reason as the block above — an SDK-only consumer
+// branches on `decrypt_error_code === SENDER_KEY_UNAVAILABLE_CODE` and prints
+// the sentence the SDK already handed it, without a second dependency and
+// without re-wording either.
+//
+// `senderKeyExplainer()` is the ONE implementation of "explain once, then
+// mark": call it once per render, feed it each row's `decrypt_error`, print
+// what it hands back. A surface that re-implements that rule is how eight
+// unopenable rows become eight copies of the same paragraph.
+// `senderKeyExplanation(row)` is the row-shaped half of the same rule: it
+// answers which rows the explainer is even for, reading the typed code rather
+// than the sentence. A renderer holding a row wants that one; a renderer
+// holding a bare error string wants `senderKeyExplainer` alone.
+export {
+	SENDER_KEY_UNAVAILABLE_CODE,
+	SENDER_KEY_UNAVAILABLE_PREVIEW,
+	senderKeyExplainer,
+	senderKeyExplanation,
+} from "@rine-network/core";
+export type {
+	SenderKeyExplained,
+	SenderKeyExplainer,
+	SenderKeyRefusedRow,
+} from "@rine-network/core";
 
 // ---------------------------------------------------------------------------
 // Domain types (branded)
@@ -211,12 +357,35 @@ export {
 	type ConversationStatusString,
 	type JoinRequestStatusString,
 	type VoteChoiceString,
+	// What `groups.listRequests()` returns and what `groups.vote()` answers.
+	// Absent from here, a caller could not name the row it iterates — which is
+	// how two consuming packages ended up re-deriving it from the schema — and
+	// could not read the electorate a request is decided by off a typed value.
+	type JoinRequestRead,
+	type VoteResponse,
+	// Whether the reading agent's own vote on a request would count, and why.
+	// The reason predicts the status the vote route answers, so a surface can
+	// render the refusal before spending the call.
+	type VoteEligibilityReason,
 	type WebhookJobStatusString,
 	type EncryptionVersionString,
+	// The response shapes whose *schemas* this file already re-exports below.
+	// Without the type a consumer can hold what `whoami()`, `groups.get()`,
+	// `groups.list()`, `groups.members()`, `discover()`, `inspect()` and
+	// `discoverGroups()` return and still not name it — which is how two
+	// packages that consume this SDK came to re-derive three of them locally
+	// with `z.infer<>`. Same class as `MlsRecoveryResult`.
+	type WhoAmI,
+	type GroupRead,
+	type GroupMember,
+	type GroupSummary,
+	type AgentSummary,
+	type AgentProfile,
 	MessageType,
 	ConversationStatus,
 	JoinRequestStatus,
 	VoteChoice,
+	VoteEligibility,
 	WebhookJobStatus,
 	EncryptionVersion,
 	RESERVED_MESSAGE_TYPES,
@@ -229,6 +398,20 @@ export {
 	asOrgUuid,
 	asWebhookUuid,
 } from "./types.js";
+
+// ---------------------------------------------------------------------------
+// Group predicates (one definition per language; integrations re-export these
+// rather than deciding "is this MLS?" for themselves)
+// ---------------------------------------------------------------------------
+
+export {
+	groupAcceptsMlsSendOnly,
+	groupIsMls,
+	groupMlsInitInFlight,
+	groupMlsNeverFounded,
+	unfoundedGroupNote,
+} from "./format/groups.js";
+export type { UnfoundedGroupRepair } from "./format/groups.js";
 
 // ---------------------------------------------------------------------------
 // Zod schemas (named exports, for advanced / testing use)

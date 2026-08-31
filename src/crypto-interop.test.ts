@@ -25,13 +25,12 @@
  *
  * Verification status matrix:
  *   - `verified: true,  status: 'verified'`     — happy-path (cases 1-4).
- *   - `verified: false, status: 'invalid'`      — sig-invalid path. For DMs
- *     the SDK passes through rine-core's return (plaintext present, verified
- *     false, status 'invalid'). For groups rine-core throws so
- *     `decryptEnvelope` populates `decrypt_error` and suppresses plaintext —
- *     documented divergence between the two paths.
+ *   - `verified: false, status: 'invalid'` and `status: 'sender-mismatch'` —
+ *     the two authenticity failures. Both are refused identically on the DM and
+ *     the group path: `decrypt_error` is populated and no plaintext comes back.
  *   - `verified: false, status: 'unverifiable'` — signing key lookup fails
- *     (no sender keys on record). Plaintext is returned, verified=false.
+ *     (no sender keys on record). Plaintext is returned, verified=false: the
+ *     verdict is missing rather than adverse, so content is not withheld.
  *
  * Additional negative paths:
  *   - HPKE ciphertext tampering → `decrypt_error` populated, plaintext undef.
@@ -39,8 +38,10 @@
  *   - `sender-key-v1` envelope without `group_id` → `decrypt_error`.
  *   - Sender-key retry path: first dispatch fails, pending distribution is
  *     ingested, second dispatch succeeds.
- *   - Repeat decrypt of one group row: bare ratchet refuses it, the
- *     `GroupDecryptMemo` replays it; 1:1 rows are never memoized.
+ *   - Repeat decrypt of one group row: rine-core's on-disk read cache replays
+ *     it across processes, the `GroupDecryptMemo` replays it in-process, and
+ *     the bare ratchet — with the cache taken away — still refuses it; 1:1 rows
+ *     are never memoized.
  *   - Unknown `encryption_version` → `decrypt_error`.
  */
 
@@ -51,12 +52,14 @@ import {
   type AgentKeys,
   type HttpClient as CoreHttpClient,
   type SenderKeyState,
+  deleteGroupReadCache,
   encryptGroupMessage,
   encryptMessage,
   fromBase64Url,
   generateAgentKeys,
   generateSenderKey,
   loadAgentKeys,
+  loadSenderKeyStates,
   saveAgentKeys,
   saveSenderKeyState,
   signingPublicKeyToJWK,
@@ -78,6 +81,8 @@ const RECIPIENT_ID = "b2c3d4e5-f6a7-4901-bcde-f12345678901";
 const GROUP_ID = "c3d4e5f6-a7b8-4012-cdef-123456789012";
 const MSG_ID = "d4e5f6a7-b8c9-4123-defa-234567890123";
 const CONV_ID = "e5f6a7b8-c9d0-4234-efab-345678901234";
+/** A peer that re-seals another agent's signed envelope and posts it as its own. */
+const RESEALER_ID = "f6a7b8c9-d0e1-4345-fabc-456789012345";
 
 type KeyStore = Map<string, AgentKeys>;
 
@@ -286,11 +291,11 @@ describe("crypto interop — DM round-trip", () => {
 });
 
 // ---------------------------------------------------------------------------
-// A7 — PQ hybrid DM round-trip (regression for C4).
+// PQ hybrid DM round-trip.
 //
 // Two audits found 8 bugs in the hybrid read/decrypt path that escaped because
 // no test ever drove an `hpke-hybrid-v1` envelope through `decryptEnvelope`.
-// The headline failure (C4): `decrypt.ts`'s version dispatch only matched
+// The headline failure: `decrypt.ts`'s version dispatch only matched
 // `hpke-v1`, so every hybrid envelope fell through to the
 // "unknown encryption_version" branch and came back with
 // `decrypt_error: 'unknown encryption_version: hpke-hybrid-v1'` and NO
@@ -303,7 +308,7 @@ describe("crypto interop — DM round-trip", () => {
 // `decrypt_error` becomes non-null and `plaintext` becomes undefined.
 // ---------------------------------------------------------------------------
 
-describe("crypto interop — PQ hybrid DM round-trip (C4 regression)", () => {
+describe("crypto interop — PQ hybrid DM round-trip", () => {
   it("SDK decrypts an hpke-hybrid-v1 envelope and recovers the plaintext", async () => {
     const recipientPq = requireRecipientPq();
     const payload = { task: "translate", text: "quantum-safe", n: 7 };
@@ -456,15 +461,21 @@ describe("crypto interop — group round-trip", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Repeat decrypt of a peer's group row (W1 #2 — TS half of the R3 defect).
+// Repeat decrypt of a peer's group row — the TS half of the defect.
 //
 // A group ratchet step is single-use: `openGroup` derives the key for
 // `messageIndex`, advances the chain, does not retain the consumed key, and
-// the advanced state is persisted. So the SECOND decrypt of the same row
-// lands in the `messageIndex < state.messageIndex` branch with an empty
-// skipped-key cache. Every SDK receive surface can see one row twice
-// (`inbox()` re-poll, `read()` after `inbox()`, `thread()` over a group
-// conversation), which is why `decryptEnvelope` memoizes group results.
+// the advanced state is persisted. So the SECOND decrypt of the same row lands
+// in the `messageIndex < state.messageIndex` branch with an empty skipped-key
+// cache. Every SDK receive surface can see one row twice (`inbox()` re-poll,
+// `read()` after `inbox()`, `thread()` over a group conversation), which is why
+// `decryptEnvelope` memoizes group results.
+//
+// Two things now answer a repeat read, and they are not the same thing. The
+// `GroupDecryptMemo` is in-process and dies with the client. rine-core's read
+// cache is on disk, so it also answers the CLI, which is a fresh process per
+// invocation — the case the memo could never reach, and the one an operator
+// meets when re-reading an inbox entry.
 // ---------------------------------------------------------------------------
 
 describe("crypto interop — repeat group decrypt", () => {
@@ -486,11 +497,12 @@ describe("crypto interop — repeat group decrypt", () => {
     });
   }
 
-  it("without a memo the ratchet refuses the second decrypt of the same row", async () => {
-    // Pins the underlying rine-core semantics the memo exists to absorb.
-    // `retrySenderKey` is off so the raw ratchet error is observable rather
-    // than the (equally failing) post-recovery one.
-    const msg = await groupEnvelope({ announcement: "once only" });
+  it("without a memo the read cache still replays the second decrypt", async () => {
+    // No memo and no shared client: this is the CLI's shape, a fresh process
+    // per read. It used to answer "message key expired or already consumed" —
+    // an error about a key that is simply gone — and now answers the message.
+    const payload = { announcement: "once only" };
+    const msg = await groupEnvelope(payload);
 
     const first = await decryptEnvelope({
       core: asCore(makeMockCore(store)),
@@ -506,6 +518,32 @@ describe("crypto interop — repeat group decrypt", () => {
     });
 
     expect(first.decrypt_error).toBeNull();
+    expect(second.decrypt_error).toBeNull();
+    expect(second.plaintext).toEqual(payload);
+  });
+
+  it("with the read cache taken away the ratchet refuses it, exactly as before", async () => {
+    // The control arm, and the thing that makes the test above mean something:
+    // one variable changes — the cache file — and the same row, the same config
+    // dir and the same sender-key state are asked again. It also still pins the
+    // underlying rine-core semantics, which have not changed: the ratchet step
+    // is spent and the plaintext is kept beside it, not derived again.
+    const msg = await groupEnvelope({ announcement: "once only" });
+
+    await decryptEnvelope({
+      core: asCore(makeMockCore(store)),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg,
+    });
+    deleteGroupReadCache(configDir, RECIPIENT_ID, GROUP_ID);
+    const second = await decryptEnvelope({
+      core: asCore(makeMockCore(store)),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg,
+    });
+
     expect(second.decrypt_error).toBe(
       "message key expired or already consumed",
     );
@@ -541,6 +579,75 @@ describe("crypto interop — repeat group decrypt", () => {
     // downgraded read.
     expect(second.verified).toBe(true);
     expect(second.verification_status).toBe("verified");
+  });
+
+  it("replays the memo for an honest repeat read whose sender id differs only in case", async () => {
+    // The regression guard on how the replay is bound. Agent ids are
+    // server-issued UUIDs and the sender comparison normalises them, so the same
+    // row served again under an upper-cased id is the SAME honest read: it must
+    // still replay. Binding the memo by key instead of by comparison would miss
+    // here, land on the spent ratchet, and bring back the read-once bug.
+    const payload = { announcement: "meeting at 3pm", attendees: 4 };
+    const msg = await groupEnvelope(payload);
+    const memo = new GroupDecryptMemo();
+
+    await decryptEnvelope({
+      core: asCore(makeMockCore(store)),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg,
+      retrySenderKey: true,
+      memo,
+    });
+    const second = await decryptEnvelope({
+      core: asCore(makeMockCore(store)),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg: { ...msg, from_agent_id: SENDER_ID.toUpperCase() },
+      retrySenderKey: true,
+      memo,
+    });
+
+    expect(second.decrypt_error).toBeNull();
+    expect(second.plaintext).toEqual(payload);
+    expect(second.verified).toBe(true);
+    expect(second.verification_status).toBe("verified");
+  });
+
+  it("refuses a memoized row re-served under a different sender", async () => {
+    // The memo holds what the bytes said; who sent them is decided per read. A
+    // server (or an on-path attacker) that re-serves an already-opened row under
+    // another sender must not get the first read's verdict back — and the
+    // refusal must be the honest `sender-mismatch`, not the spent-ratchet error
+    // the bare chain would have produced.
+    const payload = { announcement: "meeting at 3pm", attendees: 4 };
+    const msg = await groupEnvelope(payload);
+    const memo = new GroupDecryptMemo();
+
+    const first = await decryptEnvelope({
+      core: asCore(makeMockCore(store)),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg,
+      retrySenderKey: true,
+      memo,
+    });
+    const second = await decryptEnvelope({
+      core: asCore(makeMockCore(store)),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg: { ...msg, from_agent_id: RESEALER_ID },
+      retrySenderKey: true,
+      memo,
+    });
+
+    expect(first.plaintext).toEqual(payload);
+    expect(second.plaintext).toBeUndefined();
+    expect(second.verified).toBe(false);
+    expect(second.verification_status).toBe("sender-mismatch");
+    expect(second.decrypt_error).toBe(
+      "Envelope sender does not match the message sender",
+    );
   });
 
   it("never memoizes a 1:1 row, whose decrypt is already repeatable", async () => {
@@ -660,15 +767,16 @@ describe("crypto interop — verification status matrix", () => {
     expect(result.verified).toBe(true);
     expect(result.verification_status).toBe("verified");
     expect(result.decrypt_error).toBeNull();
+    // The honest row is untouched by the refusal rules below: it still carries
+    // its content, so a suite that refuses everything cannot read as green.
+    expect(result.plaintext).toEqual(payload);
   });
 
   it("invalid path (DM): sender key server returns a foreign signing key", async () => {
     // The message was signed by `senderKeys.signing`, but the signing key
-    // fetched during verify points to a different agent. rine-core's
-    // `decryptMessage` returns plaintext with `verified: false` in this
-    // case (the ciphertext was still addressed to the recipient), and
-    // `decryptEnvelope` passes that through — the caller branches on
-    // `result.verified`, not on the presence of plaintext.
+    // fetched during verify points to a different agent. Bytes whose signature
+    // does not check out are refused on the 1:1 path exactly as they are in a
+    // group: no plaintext, and a `decrypt_error` naming the failure.
     const payload = { msg: "spoofed" };
     const encrypted = await encryptMessage(
       configDir,
@@ -687,11 +795,12 @@ describe("crypto interop — verification status matrix", () => {
       msg: wireMessage("hpke-v1", encrypted.encrypted_payload),
     });
 
-    expect(result.decrypt_error).toBeNull();
     expect(result.verified).toBe(false);
     expect(result.verification_status).toBe("invalid");
-    // Plaintext still returned — callers must check `verified` before trust.
-    expect(result.plaintext).toEqual(payload);
+    expect(result.plaintext).toBeUndefined();
+    expect(result.decrypt_error).toContain(
+      "Sender signature verification failed",
+    );
   });
 
   it("invalid path (group): rine-core throws, SDK surfaces decrypt_error", async () => {
@@ -737,10 +846,92 @@ describe("crypto interop — verification status matrix", () => {
     expect(result.verification_status).toBe("invalid");
   });
 
+  it("sender-mismatch path (DM): content re-sealed under another sender is not verified", async () => {
+    // The envelope is genuinely signed by SENDER_ID. A peer that holds it can
+    // re-seal the same bytes to this recipient and post it as its own — the
+    // server then authenticates the resealer as the sender. The row's sender and
+    // the envelope's signer disagree, so the turn is not verified content of
+    // either agent.
+    const payload = { msg: "authentic content of another agent" };
+    const encrypted = await encryptMessage(
+      configDir,
+      SENDER_ID,
+      recipientKeys.encryption.publicKey,
+      payload,
+    );
+
+    const mockCore = makeMockCore(store);
+    const result = await decryptEnvelope({
+      core: asCore(mockCore),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg: wireMessage("hpke-v1", encrypted.encrypted_payload, {
+        from_agent_id: RESEALER_ID,
+        // The header the sender supplies is relayed unchecked, so it still names
+        // the original signer — it must not be what the check reads.
+        sender_signing_kid: `rine:${SENDER_ID}`,
+      }),
+    });
+
+    expect(result.verified).toBe(false);
+    expect(result.verification_status).toBe("sender-mismatch");
+    // Refused, not flagged: the content of the row is withheld, so a caller that
+    // reads `plaintext` without reading `verified` still cannot render bytes
+    // attributed to an agent that did not sign them. The verdict and the reason
+    // stay on the message so an operator can tell this from a transient failure.
+    expect(result.plaintext).toBeUndefined();
+    expect(result.decrypt_error).toContain(
+      "Envelope sender does not match the message sender",
+    );
+    // Disagreement over who authored the bytes is not a network question: no key
+    // is fetched to reach the verdict.
+    expect(mockCore.get).not.toHaveBeenCalled();
+  });
+
+  it("sender-mismatch path (group): a re-sealed turn is refused and the ratchet stands still", async () => {
+    const state = generateSenderKey(GROUP_ID, SENDER_ID);
+    primeRecipientWithSenderState(configDir, RECIPIENT_ID, GROUP_ID, state);
+    const before = loadSenderKeyStates(configDir, RECIPIENT_ID, GROUP_ID);
+
+    const { result: encrypted } = await encryptGroupMessage(
+      configDir,
+      SENDER_ID,
+      GROUP_ID,
+      state,
+      { sensitive: "data" },
+    );
+
+    const result = await decryptEnvelope({
+      core: asCore(makeMockCore(store)),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg: wireMessage("sender-key-v1", encrypted.encrypted_payload, {
+        group_id: GROUP_ID,
+        from_agent_id: RESEALER_ID,
+      }),
+    });
+
+    expect(result.plaintext).toBeUndefined();
+    expect(result.verified).toBe(false);
+    expect(result.verification_status).toBe("sender-mismatch");
+    expect(result.decrypt_error).toContain(
+      "Envelope sender does not match the message sender",
+    );
+    // The refusal is not a retry oracle on the sender-key path: the recipient's
+    // chain is exactly where it was, so the honest copy of this message still
+    // opens.
+    expect(loadSenderKeyStates(configDir, RECIPIENT_ID, GROUP_ID)).toEqual(
+      before,
+    );
+  });
+
   it("unverifiable path: sender not in key cache returns plaintext + verified=false", async () => {
     // `verifyEnvelopeSender` catches the key-fetch rejection and falls
     // through to `verified: false, verificationStatus: 'unverifiable'`.
-    // Plaintext is still returned because the HPKE layer succeeded.
+    // Plaintext is still returned because the HPKE layer succeeded: an
+    // unreachable key endpoint is a transient condition, not a finding against
+    // the message, and it must not cost the recipient readable content the way
+    // an authenticity failure does.
     const payload = { msg: "unknown sender" };
     const encrypted = await encryptMessage(
       configDir,

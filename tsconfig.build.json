@@ -5,5 +5,15 @@
 		"emitDeclarationOnly": true,
 		"noEmit": false
 	},
-	"exclude": ["src/**/*.test.ts"]
+	// `src/_*.ts` is the naming convention for a module that supports the tests
+	// and is not part of the published surface. A glob rather than a list of
+	// names: the list was hand-maintained, and the next such module would have
+	// shipped its declarations to consumers by being forgotten.
+	//
+	// It does NOT unship `_parity.ts`, and cannot — `src/index.ts` imports its
+	// `SurfacePins` type, so tsc pulls it into the program as a dependency of an
+	// included file and emits `dist/_parity.d.ts` either way. That is correct:
+	// a type the entry point references has to be reachable from the entry
+	// point's own declarations. `exclude` only filters the ROOT file list.
+	"exclude": ["src/**/*.test.ts", "src/_*.ts"]
 }

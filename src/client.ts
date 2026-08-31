@@ -2,7 +2,14 @@
  * AsyncRineClient — full async API surface for Rine E2E-encrypted messaging.
  */
 
+import {
+	type ResolvedActor,
+	ACTING_AGENT_HEADER,
+	THREAD_REF_SURFACES,
+	resolveThreadRef,
+} from "@rine-network/core";
 import type { StandardSchemaV1 } from "@standard-schema/spec";
+import { actingAgentHeader } from "./api/acting-agent.js";
 import { parse } from "./api/adapters.js";
 import { SDKHttpClient } from "./api/http.js";
 import type { RineMiddleware } from "./api/middleware.js";
@@ -16,6 +23,10 @@ import {
 	type DiscoveryFilters,
 	DiscoveryResource,
 } from "./resources/discovery.js";
+import {
+	type AgentHandleMap,
+	AgentHandleCache,
+} from "./resources/agent-handles.js";
 import { GroupsResource } from "./resources/groups.js";
 import {
 	type AddPostQuantumKeyOptions,
@@ -31,7 +42,11 @@ import { MessagesResource } from "./resources/messages.js";
 import { PaymentsResource } from "./resources/payments.js";
 import { PollingResource } from "./resources/polling.js";
 import { type StreamOptions, StreamsResource } from "./resources/streams.js";
-import { type FetchThreadOptions, fetchThread } from "./resources/thread.js";
+import {
+	type FetchThreadOptions,
+	fetchThread,
+	transcriptPath,
+} from "./resources/thread.js";
 import { WebhooksResource } from "./resources/webhooks.js";
 import {
 	type AgentHandle,
@@ -71,7 +86,7 @@ export type { StreamOptions };
 export interface RineClientOptions {
 	configDir?: string;
 	apiUrl?: string;
-	/** Agent handle/name/UUID — auto-resolves to agent UUID. */
+	/** Agent handle or UUID, sent as `X-Rine-Agent` verbatim (no bare names). */
 	agent?: string;
 	/** Request timeout in ms. Default: 30_000. */
 	timeout?: number;
@@ -140,6 +155,20 @@ export interface InboxOptions {
 
 export interface MarkDeliveredOptions {
 	agent?: string;
+	signal?: AbortSignal;
+}
+
+/** What {@link RineClient.thread} takes besides the conversation id. */
+export interface ThreadOptions {
+	/**
+	 * The group to read, as a handle (`#name@org`), a bare name, or a UUID.
+	 * Name this or the conversation id, never both.
+	 */
+	group?: string;
+	/** The agent to read as — its own keys open its own rows. */
+	agent?: string;
+	/** Max turns, most-recent window. The server applies its own default. */
+	limit?: number;
 	signal?: AbortSignal;
 }
 
@@ -236,6 +265,10 @@ export class AsyncRineClient implements AsyncDisposable {
 	/** x402 payment helpers — payer (pay a quote) + payee (quote/verify/settle/receipt). */
 	readonly payments: PaymentsResource;
 
+	// Not `readonly`: `withOptions` hands its own cache to the client it derives,
+	// which is the whole reason one exists (see `agentHandles`).
+	private handleCache: AgentHandleCache;
+
 	constructor(opts: RineClientOptions = {}) {
 		this.http = new SDKHttpClient({
 			configDir: opts.configDir,
@@ -260,6 +293,24 @@ export class AsyncRineClient implements AsyncDisposable {
 			this.http,
 			this.messagingResource,
 		);
+		this.handleCache = new AgentHandleCache(() => this.identity.listAgents());
+	}
+
+	/**
+	 * This org's agent ids resolved to handles, fetched at most once per client
+	 * lifetime and never throwing.
+	 *
+	 * The rule every caller renders by — handle, else the id, else the surface's
+	 * own "none seated" sentence — is stated once, on {@link AgentHandleMap} in
+	 * `resources/agent-handles.ts`. Read it there before adding a fourth case.
+	 *
+	 * It exists for `member_agent_ids`: a group row reports which of *your*
+	 * agents are seated as UUIDs, and a UUID is not something an operator or a
+	 * model can act on. Resolution is client-side, against the org's own agent
+	 * list, so it depends on no field the deployed server does not already send.
+	 */
+	agentHandles(): Promise<AgentHandleMap> {
+		return this.handleCache.get();
 	}
 
 	// -------------------------------------------------------------------------
@@ -267,10 +318,38 @@ export class AsyncRineClient implements AsyncDisposable {
 	// -------------------------------------------------------------------------
 
 	/**
+	 * Which of the org's agents a call would act as, and anything the resolver
+	 * has to say about the value it was given.
+	 *
+	 * The one **public, per-call** way to obtain that note. It is not a property
+	 * of the client on purpose: one `AsyncRineClient` serves a whole process of
+	 * concurrent inbound work, and a `lastActorWarning` attribute written while
+	 * resolving one call is read by whichever call finished next — the warning
+	 * then names the wrong send, or is overwritten and lost. A value object
+	 * cannot be misattributed.
+	 *
+	 * A host that renders the note itself resolves once, here, and passes the
+	 * resolved UUID down as `opts.agent`; the inner path short-circuits a UUID
+	 * with no lookup, so nothing is resolved twice and no second note is minted.
+	 * A host that does not call this still gets the note on the operator log.
+	 *
+	 * @param agent - Name, handle or UUID; omitted falls back to the client's
+	 *   own default agent, then to the org's only agent.
+	 * @returns The resolved agent id, and a `warning` when a one-agent org acted
+	 *   on a value that named nobody.
+	 */
+	async resolveActor(agent?: string): Promise<ResolvedActor> {
+		return this.messagingResource.resolveSenderActor(
+			this.http.getCoreHttpClient({ signal: this._signal }),
+			agent,
+		);
+	}
+
+	/**
 	 * Send an E2E-encrypted message to an agent or group.
 	 *
 	 * @param to - Recipient handle (`name@org`), group handle
-	 *   (`#group@org`), or UUID.
+	 *   (`#logistics@acme.rine.network`), or UUID.
 	 * @param payload - Message payload (encrypted before sending).
 	 * @param opts - Optional type, metadata, schema validation, signal.
 	 * @returns The server-acknowledged message envelope.
@@ -618,7 +697,7 @@ export class AsyncRineClient implements AsyncDisposable {
 			return new ConversationScope(this, convIdOrMsg);
 		}
 		const msg = convIdOrMsg;
-		const selfHandle = this.http.agentHeader?.["X-Rine-Agent"];
+		const selfHandle = this.http.agentHeader?.[ACTING_AGENT_HEADER];
 		const peer = derivePeerFromMessage(msg, selfHandle);
 		return new ConversationScope(
 			this,
@@ -629,23 +708,59 @@ export class AsyncRineClient implements AsyncDisposable {
 	}
 
 	/**
-	 * Fetch the both-sided, role-tagged transcript of a conversation.
+	 * Fetch the both-sided, role-tagged transcript of a conversation or a group.
 	 * Each row is decrypted with the caller's OWN keys —
 	 * the self-sealed copy for messages this agent sent, the recipient copy
 	 * for messages it received, the group cache for group rows. Undecryptable
 	 * rows (a legacy sent message with no self-blob, or a decrypt failure)
 	 * render as `"[unavailable]"` and never throw.
 	 *
+	 * 🔴 A **group** is named the way every other group verb takes it — a
+	 * handle, a bare name or a UUID. Reading a group used to be the one verb in
+	 * the family that would not accept the name of the thing it reads: it
+	 * demanded a *conversation* UUID, the id of a different entity whose only
+	 * source was a column another method returned. A caller holding a group and
+	 * nothing else had nowhere to spend it, and spent it here anyway — into a
+	 * path parameter the server types `uuid.UUID`, which answers a framework
+	 * 422 and no next step.
+	 *
+	 * `conversationId` stays first and positional, so nothing that worked before
+	 * `group` existed calls differently now.
+	 *
 	 * Exposed via `client.conversation(id).thread()`; this method carries the
 	 * client-internal plumbing (agent resolution + http) so `ConversationScope`
 	 * stays a thin delegator, mirroring how `send`/`inbox` route through the
 	 * client.
+	 *
+	 * @example
+	 * ```ts
+	 * await client.thread(msg.conversation_id);
+	 * await client.thread({ group: "#ops@acme" });
+	 * ```
+	 *
+	 * @throws {Error} Both references named, or neither, or a `conversationId`
+	 *   that is not a spelling the wire reads as a UUID — all refused locally,
+	 *   before a request is spent.
 	 */
+	thread(conversationId: string, opts?: ThreadOptions): Promise<ThreadEntry[]>;
+	thread(opts: ThreadOptions): Promise<ThreadEntry[]>;
 	async thread(
-		conversationId: string,
-		opts?: { agent?: string; limit?: number; signal?: AbortSignal },
+		conversationIdOrOpts?: string | ThreadOptions,
+		maybeOpts?: ThreadOptions,
 	): Promise<ThreadEntry[]> {
-		const signal = opts?.signal ?? this._signal;
+		const isPositional = typeof conversationIdOrOpts === "string";
+		const opts = (isPositional ? maybeOpts : conversationIdOrOpts) ?? {};
+		// Exactly one of the two references, and a conversation reference the wire
+		// would read as a UUID — both decided in `rine-core`, offline, so a caller
+		// that named the wrong thing pays nothing to find out.
+		const ref = resolveThreadRef(
+			{
+				...(isPositional ? { conversationId: conversationIdOrOpts } : {}),
+				...(opts.group !== undefined ? { group: opts.group } : {}),
+			},
+			THREAD_REF_SURFACES.sdk,
+		);
+		const signal = opts.signal ?? this._signal;
 		const core = this.http.getCoreHttpClient({ signal });
 		// Honor the agent override so a non-default agent in a multi-agent org
 		// can read its own thread (the self-sealed `direction:"sent"` blob is
@@ -653,15 +768,20 @@ export class AsyncRineClient implements AsyncDisposable {
 		// for that decrypt). Mirrors `inbox`/`read`/Python `thread(agent=...)`.
 		const agentId = await this.messagingResource.resolveSenderId(
 			core,
-			opts?.agent,
+			opts.agent,
 		);
+		// The group resolve and the read name the SAME acting agent. `GET /groups`
+		// selects on the org today, so this changes no verdict — but one call
+		// answered by two different actors is what a reader of the trace sees, and
+		// the day that route becomes agent-scoped it would resolve silently wrong.
+		const actorHeader = actingAgentHeader(opts.agent, agentId);
 		const fetchOpts: FetchThreadOptions = {
 			http: this.http,
 			core,
 			agentId,
-			conversationId,
-			...(opts?.agent !== undefined ? { agent: opts.agent } : {}),
-			...(opts?.limit !== undefined ? { limit: opts.limit } : {}),
+			path: await transcriptPath(core, ref, actorHeader),
+			...(opts.agent !== undefined ? { agent: opts.agent } : {}),
+			...(opts.limit !== undefined ? { limit: opts.limit } : {}),
 			...(signal !== undefined ? { signal } : {}),
 		};
 		return fetchThread(fetchOpts);
@@ -855,15 +975,22 @@ export class AsyncRineClient implements AsyncDisposable {
 		maxRetries?: number;
 		signal?: AbortSignal;
 	}): AsyncRineClient {
-		return new AsyncRineClient({
+		const derived = new AsyncRineClient({
 			configDir: this.http.configDir,
 			apiUrl: this.http.apiUrl,
-			agent: opts.agent ?? this.http.agentHeader?.["X-Rine-Agent"],
+			agent: opts.agent ?? this.http.agentHeader?.[ACTING_AGENT_HEADER],
 			timeout: opts.timeout ?? this.http.timeout,
 			maxRetries: opts.maxRetries ?? this.http.maxRetries,
 			middleware: this.http.middleware,
 			signal: opts.signal ?? this._signal,
 		});
+		// The agent list is ORG-scoped and this derived client shares the
+		// credentials that scope it, so it shares the fetch too. Without this a
+		// host that derives per call — `rine-mastra` does, on every tool execute —
+		// would pay `GET /agents` per render, which is not the cost the cache is
+		// there to accept.
+		derived.handleCache = this.handleCache;
+		return derived;
 	}
 
 	/** Return a derived client bound to the given AbortSignal. */

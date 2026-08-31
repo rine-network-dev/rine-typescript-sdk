@@ -1,188 +1,136 @@
 /**
- * Both-sided conversation thread fetch + decrypt + render.
+ * Both-sided transcript fetch + decrypt + render.
  *
- * Backs `ConversationScope.thread()`. Kept in its own module so the
- * already-oversized `conversation.ts` stays close to the file-size budget.
+ * Backs `ConversationScope.thread()` and `client.thread()`. Kept in its own
+ * module so the already-oversized `conversation.ts` stays close to the
+ * file-size budget.
  *
- * The thread endpoint (`GET /conversations/{id}/messages`)
- * returns the conversation's messages in both directions, ascending, each a
- * `MessageRead` tagged with `direction` and — for the caller's own rows — the
- * `self_encrypted_payload` blob. For each row we pick the
- * ciphertext the caller can actually open with its OWN keys:
+ * A transcript has two routes, because it has two things it can be named by: a
+ * conversation (`GET /conversations/{id}/messages`) and a group
+ * (`GET /groups/{id}/messages`). They answer with the same page shape and need
+ * the identical decrypt and render, so {@link transcriptPath} is where the two
+ * references part company and {@link fetchThread} takes the route rather than
+ * either id — the same split the Python SDK's `_transcript_rows` makes, and for
+ * the same reason: the decrypt has no opinion about which name got it here.
  *
- *   - `direction === "sent"`     → `self_encrypted_payload` (sealed to self)
- *   - `direction === "received"` → `encrypted_payload` (sealed to the caller)
- *   - group rows (`group_id` set, `sender-key-v1`/`mls-v1`) → fall through to
- *     the normal group decrypt (the caller self-reads via its key cache).
+ * 🔴 The two routes do NOT return the same rows for a group founded before the
+ * group⇄conversation cutover (alembic 0015 is forward-only, so both message
+ * shapes are permanent). The group route is the group's own history;
+ * the conversation route cannot reach a pre-cutover post at all. Anything
+ * comparing them pins a tolerance, never an equality.
  *
- * Decryption reuses `decryptEnvelope` (the same helper `inbox()`/`read()` use)
- * by overriding `encrypted_payload` with the selected ciphertext, so no new
- * decrypt path is introduced. An undecryptable row never throws: a `"sent"`
- * row with no self-blob (legacy, pre-self-seal) or any `decrypt_error` degrades
- * to a `[unavailable]` placeholder — mirroring `decryptEnvelope`'s non-throw
- * contract.
+ * Either route returns the messages in both directions, ascending. What one row
+ * becomes is `thread-row.ts`; the one page-level rule that lives here is the
+ * no-sender-key tiering (explained in full on the first row of the render that
+ * carries it, a bounded marker on the rest), because "the first row" is
+ * a fact about the caller's row ORDER and the rows decrypt concurrently.
  */
 
-import type { HttpClient as CoreHttpClient } from "@rine-network/core";
+import {
+	type HttpClient as CoreHttpClient,
+	type ThreadRef,
+	conversationTranscriptPath,
+	groupTranscriptPath,
+	senderKeyExplainer,
+} from "@rine-network/core";
+import { actingAgentHeader } from "../api/acting-agent.js";
 import type { SDKHttpClient } from "../api/http.js";
-import type { MessageRead, ThreadEntry, VerificationStatus } from "../types.js";
+import type { ThreadEntry } from "../types.js";
 import { ConversationMessagesPageSchema } from "../types.js";
-import { decryptEnvelope } from "./decrypt.js";
+import { resolveGroupRef } from "./groups-resolve.js";
+import { toThreadEntry } from "./thread-row.js";
 
-const UNAVAILABLE = "[unavailable]";
+/**
+ * The route that reads the transcript the caller named, resolving a group
+ * reference on the way if that is what they named.
+ *
+ * A group is resolved to its UUID exactly once per read, through the same
+ * resolver the send path uses (`./groups-resolve.js`), so `#ops@acme`, `ops`
+ * and the UUID all reach the same transcript. A conversation reference has
+ * already been checked against what the wire reads as a UUID
+ * ({@link ThreadRef}), so it becomes a path segment as it stands.
+ *
+ * 🔴 Neither route is spelled here. Both come from `@rine-network/core`, which
+ * this package already depends on and where `readThreadPage` reads the same two
+ * routes: a route written down in two packages is a route a server-side rename
+ * fixes in one of them. The contract gate resolves the core builders against
+ * the real FastAPI routes and does not scan this package at all, so a copy kept
+ * here would be the copy nothing checks.
+ *
+ * `extraHeaders` rides the resolve leg so the group is looked up as the same
+ * acting agent the read is attributed to.
+ *
+ * @throws {Error} A group reference no group answers to.
+ */
+export async function transcriptPath(
+	core: CoreHttpClient,
+	ref: ThreadRef,
+	extraHeaders?: Record<string, string>,
+): Promise<string> {
+	if (ref.kind === "conversation") {
+		return conversationTranscriptPath(ref.conversationId);
+	}
+	const group = await resolveGroupRef(core, ref.ref, extraHeaders);
+	return groupTranscriptPath(group.id);
+}
 
 export interface FetchThreadOptions {
 	readonly http: SDKHttpClient;
 	readonly core: CoreHttpClient;
 	readonly agentId: string;
-	readonly conversationId: string;
-	/** Agent handle to read as (forwarded as the `X-Rine-Agent` override). */
+	/**
+	 * The transcript's route, from {@link transcriptPath}. A route rather than
+	 * an id because a transcript has two of them and the decrypt below has no
+	 * opinion about which one this is.
+	 */
+	readonly path: string;
+	/**
+	 * The acting agent as the caller spelled it — name, handle or UUID — for the
+	 * `X-Rine-Agent` override. `agentId` above is the same agent resolved, and
+	 * is what decrypts; this is what the header says.
+	 */
 	readonly agent?: string;
 	readonly limit?: number;
 	readonly signal?: AbortSignal;
 }
 
 /**
- * Fetch the both-sided thread, decrypt each row with the caller's own keys,
- * and return an ordered, role-tagged transcript. Never throws on an
+ * Fetch the both-sided transcript, decrypt each row with the caller's own keys,
+ * and return an ordered, role-tagged rendering. Never throws on an
  * undecryptable row.
  */
 export async function fetchThread(
 	opts: FetchThreadOptions,
 ): Promise<ThreadEntry[]> {
-	const { http, core, agentId, conversationId, agent, limit, signal } = opts;
+	const { http, core, agentId, path, agent, limit, signal } = opts;
+	const actorHeader = actingAgentHeader(agent, agentId);
 
-	const raw = await http.get<unknown>(
-		`/conversations/${conversationId}/messages`,
-		{
-			params: { limit },
-			...(agent !== undefined
-				? { extraHeaders: { "X-Rine-Agent": agent } }
-				: {}),
-			signal,
-			operation: "thread",
-		},
-	);
-	// The endpoint returns `{ messages, truncated }` — the
-	// both-sided thread, ascending — NOT a cursor page. Parse that shape
+	const raw = await http.get<unknown>(path, {
+		params: { limit },
+		// One definition, in `api/acting-agent.ts`: a name and a handle both go
+		// out as the id already resolved for them against this org's own
+		// agents, because an acting agent must be an agent the caller owns.
+		// Written inline here once, which is how a rule with two copies starts
+		// disagreeing with itself.
+		...(actorHeader ? { extraHeaders: actorHeader } : {}),
+		signal,
+		operation: "thread",
+	});
+	// Either endpoint returns `{ messages, truncated }` — the both-sided
+	// transcript, ascending — NOT a cursor page. Parse that shape
 	// directly (`truncated` is currently informational and not surfaced).
 	const page = ConversationMessagesPageSchema.parse(raw);
 
-	const entries = await Promise.all(
+	const classified = await Promise.all(
 		page.messages.map((row) => toThreadEntry({ core, http, agentId, row })),
 	);
-	return entries;
-}
-
-async function toThreadEntry(opts: {
-	core: CoreHttpClient;
-	http: SDKHttpClient;
-	agentId: string;
-	row: MessageRead;
-}): Promise<ThreadEntry> {
-	const { core, http, agentId, row } = opts;
-	const direction = row.direction ?? "received";
-
-	const { text, verificationStatus } = await renderRow({
-		core,
-		http,
-		agentId,
-		row,
-		direction,
-	});
-	return {
-		direction,
-		senderHandle: row.sender_handle ?? null,
-		text,
-		verificationStatus,
-		type: row.type,
-		createdAt: row.created_at,
-	};
-}
-
-/**
- * Select the right ciphertext, decrypt, and render to a plaintext string plus
- * the sender-signature verification status.
- *
- * Fail-closed on authenticity: the server is a passthrough and never verifies
- * signatures, so the SDK is the only verification point. `decryptEnvelope`
- * (via core `decryptMessage`) does NOT throw on a bad signature — it returns
- * the plaintext tagged `verification_status: "invalid"`. We treat `"invalid"`
- * as undecryptable and degrade to `[unavailable]`, matching the Python SDK
- * (which raises `CryptoError` on `status == "invalid"`), so a forged or
- * tampered turn can never enter the transcript as trusted content.
- */
-async function renderRow(opts: {
-	core: CoreHttpClient;
-	http: SDKHttpClient;
-	agentId: string;
-	row: MessageRead;
-	direction: "sent" | "received";
-}): Promise<{ text: string; verificationStatus: VerificationStatus }> {
-	const { core, http, agentId, row, direction } = opts;
-	const isGroup = row.group_id != null;
-
-	// A sent 1:1 row with no self-blob is a legacy (pre-self-seal) send the
-	// caller can never re-open — degrade rather than feed `decryptEnvelope` an
-	// empty payload (which would emit a noisier "missing encrypted_payload"
-	// error). Group sent rows self-read via the key cache, so skip this guard
-	// for them and let the group path run.
-	if (direction === "sent" && !isGroup && row.self_encrypted_payload == null) {
-		return { text: UNAVAILABLE, verificationStatus: "unverifiable" };
-	}
-
-	// For a sent 1:1 row, the caller can only open the self-sealed copy; swap it
-	// in. Received rows and group rows decrypt from `encrypted_payload` as usual.
-	const ciphertext =
-		direction === "sent" && !isGroup
-			? (row.self_encrypted_payload as string)
-			: row.encrypted_payload;
-
-	const decrypted = await decryptEnvelope({
-		core,
-		configDir: http.configDir,
-		agentId,
-		msg: { ...row, encrypted_payload: ciphertext },
-		// Group rows may need a one-shot key-material refresh, same as inbox.
-		retrySenderKey: isGroup,
-		memo: http.decryptMemo,
-	});
-
-	// Fail-closed: an invalid sender signature is an authenticity failure, not
-	// trusted content — degrade exactly like a decrypt failure (mirrors Python).
-	if (
-		decrypted.decrypt_error != null ||
-		decrypted.plaintext == null ||
-		decrypted.verification_status === "invalid"
-	) {
-		return {
-			text: UNAVAILABLE,
-			verificationStatus: decrypted.verification_status ?? "unverifiable",
-		};
-	}
-	return {
-		text: renderText(decrypted.plaintext),
-		verificationStatus: decrypted.verification_status ?? "unverifiable",
-	};
-}
-
-/**
- * Render decrypted plaintext to the human-readable body string.
- *
- * Connectors wrap the message body as `{ text: "..." }`; surface that string
- * directly so every surface renders the same content. Any other shape (a bare
- * string, or a structured payload) is stringified. This rule is mirrored
- * verbatim by the Python SDK's `thread()` so the transcript reads identically
- * across surfaces.
- */
-export function renderText(plaintext: unknown): string {
-	if (typeof plaintext === "string") return plaintext;
-	if (
-		plaintext != null &&
-		typeof plaintext === "object" &&
-		typeof (plaintext as { text?: unknown }).text === "string"
-	) {
-		return (plaintext as { text: string }).text;
-	}
-	return JSON.stringify(plaintext);
+	// One call to `thread()` is one render, so the explainer is created, spent
+	// and dropped here — never at module scope, where the second transcript of a
+	// process would silently lose the explanation the first one used up.
+	const explain = senderKeyExplainer();
+	return classified.map(({ entry, explanation }) =>
+		explanation === null
+			? entry
+			: { ...entry, text: explain(explanation).line },
+	);
 }

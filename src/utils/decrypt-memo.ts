@@ -26,8 +26,18 @@
  *   - Only the group path writes to it. 1:1 HPKE decrypt is already
  *     repeatable (the recipient's private key does not change), so caching
  *     DM plaintext would add retention for no benefit.
+ *   - An entry holds no `catchUp`: its writer stores `asReplay(result)` (below),
+ *     because a read served from here does no MLS work of its own.
  *   - A re-read after the process exits still fails. That is inherent forward
  *     secrecy, not a regression: the message was already delivered once.
+ *   - The key does NOT include the row's sender. An entry answers what the
+ *     bytes said, not who sent them, and the caller holds the replay against
+ *     the sender of the row it is reading now (`resources/decrypt.ts`). Putting
+ *     the sender in the key instead would compare it as a raw string, where the
+ *     sender check compares server-issued UUIDs trimmed and lowercased — so an
+ *     honest repeat read whose id arrived in a different case would miss the
+ *     memo, hit the spent ratchet, and reintroduce the read-once bug this memo
+ *     exists to fix.
  */
 
 import type { DecryptResult } from "@rine-network/core";
@@ -74,6 +84,28 @@ export class GroupDecryptMemo {
   get size(): number {
     return this.entries.size;
   }
+}
+
+/**
+ * A result as a *later* read of the same row must report it: same plaintext,
+ * same verdict, no catch-up.
+ *
+ * A read answered from here applied no commits and advanced no epoch, so
+ * replaying the first read's `catchUp` would report work this read did not do —
+ * and `catch_up` is precisely the field a caller reads to learn what a read
+ * changed, including whether a commit it applied evicted this agent. Reported
+ * twice, an eviction reads as two of them.
+ *
+ * Applied by the writer, not by `set`, so this memo stays a plain container and
+ * the twins agree: the Python SDK calls `DecryptResult.as_replay()`
+ * (`_crypto/message.py`) at its own two write sites. There is exactly one
+ * writer here — `decryptEnvelope` in `resources/decrypt.ts`, which every
+ * receive surface goes through.
+ */
+export function asReplay(result: DecryptResult): DecryptResult {
+  const replay: DecryptResult = { ...result };
+  delete replay.catchUp;
+  return replay;
 }
 
 function key(agentId: string, messageId: string): string {

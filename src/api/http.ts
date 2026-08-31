@@ -14,10 +14,14 @@
  */
 
 import {
+  ACTING_AGENT_HEADER,
+  type AgentKeysResponse,
   HttpClient as CoreHttpClient,
+  TtlCache,
   getOrRefreshToken,
   jitteredRefreshMargin,
   loadCredentials,
+  normalizeActor,
   resolveApiUrl as resolveCoreApiUrl,
   resolveConfigDir as resolveCoreConfigDir,
 } from "@rine-network/core";
@@ -41,7 +45,24 @@ export interface SDKHttpClientOptions {
   configDir?: string;
   /** API base URL. */
   apiUrl?: string;
-  /** Agent handle/UUID to set as X-Rine-Agent on every request. */
+  /**
+   * Agent handle or UUID to set as `X-Rine-Agent` on every request.
+   *
+   * Trimmed by `normalizeActor`; empty-after-trim means "no acting agent", so
+   * the client sends no header and the server applies its own rungs.
+   *
+   * 🔴 **A bare agent name is not accepted here.** This value reaches the wire
+   * verbatim — nothing on this path resolves it — and the server refuses a
+   * header that is neither a UUID nor a handle (422). The CLI, the MCP server
+   * and openclaw resolve a bare name against the org's agent list before they
+   * send; the SDK holds no list and does no round trip in a constructor.
+   *
+   * 🔴 **This is the only way an acting agent enters the SDK.** The SDK reads
+   * no environment for it: `rine-mastra` builds a bare client for an
+   * operator-fixed actor, so an ambient `RINE_AGENT` reaching this constructor
+   * would silently re-actor every call it makes. Surfaces call `actorFromEnv()`
+   * themselves and pass the result in. See `rine-core/src/actor.ts`.
+   */
   agent?: string;
   /** Request timeout in ms. Default: 30_000. */
   timeout?: number;
@@ -130,6 +151,14 @@ export class SDKHttpClient {
    * clears it so decrypted plaintext does not outlive the client.
    */
   readonly decryptMemo = new GroupDecryptMemo();
+  /**
+   * Per-client cache of peers' published keys, threaded into every short-lived
+   * crypto-path core client so it outlives the operation that filled it. Read on
+   * inbound verify only — outbound seals always fetch fresh, so a peer's key
+   * rotation is never hidden from a send. It holds published public keys, which
+   * are not secret, so `close()` leaves it alone.
+   */
+  private readonly keyCache = new TtlCache<AgentKeysResponse>();
 
   get configDir(): string {
     return this.resolveConfigDir();
@@ -179,7 +208,8 @@ export class SDKHttpClient {
   constructor(opts: SDKHttpClientOptions = {}) {
     this._configDir = opts.configDir;
     this._apiUrl = opts.apiUrl;
-    this.agentHeader = opts.agent ? { "X-Rine-Agent": opts.agent } : undefined;
+    const agent = normalizeActor(opts.agent);
+    this.agentHeader = agent ? { [ACTING_AGENT_HEADER]: agent } : undefined;
     this._timeout = opts.timeout ?? 30_000;
     this.maxRetries = opts.maxRetries ?? 2;
     this.middleware = opts.middleware ?? [];
@@ -297,7 +327,8 @@ export class SDKHttpClient {
    * cache. Cost is one object allocation (no network, no token fetch, no
    * file I/O at construction). The tokenFn closure reads the same config
    * dir and token cache as the SDK's REST path, so a refresh on either
-   * side is visible to the other.
+   * side is visible to the other, and the SDK's own key cache is passed in so
+   * peer-key reads survive past the operation that made them.
    *
    * Middleware scope: calls made through the returned client do NOT run
    * the SDK middleware pipeline.
@@ -315,6 +346,7 @@ export class SDKHttpClient {
       defaultHeaders: this.agentHeader,
       canRefresh: true,
       signal: opts.signal,
+      keyCache: this.keyCache,
     });
   }
 
@@ -389,8 +421,8 @@ export class SDKHttpClient {
       clearTimeout(timeoutId);
 
       if (!res.ok) {
-        const detail = await parseErrorDetail(res);
-        raiseForStatus(res.status, detail, res);
+        const { detail, code } = await parseError(res);
+        raiseForStatus(res.status, detail, res, code);
       }
 
       return res;
@@ -415,7 +447,7 @@ export class SDKHttpClient {
    * so header mutations (auth, tracing, redact) take effect on the wire.
    *
    * Core handles auth injection + 401 refresh — these are transport
-   * concerns (Dec-3.1), so middleware sees one logical call, not per-retry
+   * concerns, so middleware sees one logical call, not per-retry
    * attempts.
    */
   private createCoreRequest(): (ctx: RequestContext) => Promise<Response> {
@@ -569,19 +601,34 @@ function serializeBody(body: unknown): string | undefined {
   return JSON.stringify(body);
 }
 
-async function parseErrorDetail(res: Response): Promise<string> {
+/**
+ * The operator sentence and the machine-readable code out of one error body.
+ *
+ * Both come from the same parse because the body can only be read once: a
+ * second `res.json()` on a consumed Response yields nothing, which is how a
+ * caller that reaches for the code afterwards silently gets none.
+ */
+async function parseError(
+  res: Response,
+): Promise<{ detail: string; code?: string }> {
   try {
-    const body = (await res.json()) as { detail?: string | unknown[] };
-    if (typeof body.detail === "string") return body.detail;
+    const body = (await res.json()) as {
+      detail?: string | unknown[];
+      error?: unknown;
+    };
+    const code = typeof body.error === "string" ? body.error : undefined;
+    if (typeof body.detail === "string") return { detail: body.detail, code };
     if (Array.isArray(body.detail)) {
-      return body.detail
+      const detail = body.detail
         .map((e) => (typeof e === "string" ? e : (e as { msg: string }).msg))
         .join("; ");
+      return { detail, code };
     }
+    return { detail: res.statusText, code };
   } catch {
     // ignore parse failures
   }
-  return res.statusText;
+  return { detail: res.statusText };
 }
 
 /**

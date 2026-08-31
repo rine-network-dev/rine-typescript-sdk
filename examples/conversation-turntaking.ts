@@ -41,7 +41,7 @@ let conv: ReturnType<typeof client.conversation> | null = null;
 
 // Start the agent BEFORE sending the opening message. Otherwise a fast
 // peer could reply before the SSE stream is live and the event would be
-// delivered to an empty iterator (quality-R1 fix).
+// delivered to an empty iterator.
 await using agent = defineAgent({
   client,
   async onMessage(msg) {

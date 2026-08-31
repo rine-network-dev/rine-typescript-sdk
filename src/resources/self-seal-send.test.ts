@@ -14,7 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 const SENDER_ID = randomUUID();
 const RECIPIENT_ID = randomUUID();
@@ -30,8 +30,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		fetchAgents: vi.fn(async () => [
 			{ id: SENDER_ID, handle: "me@acme.rine.network" },
 		]),
-		resolveAgent: vi.fn(async () => SENDER_ID),
-		resolveToUuid: vi.fn(async () => RECIPIENT_ID),
+		resolveAgent: vi.fn(async () => ({ agentId: SENDER_ID })),
 		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
 		normalizeHandle: vi.fn((h: string) => h),
 		encryptMessage: vi.fn(async () => ({
@@ -44,6 +43,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 			state: {},
 			groupId: GROUP_ID,
 		})),
+		// The downgrade guard reads real local MLS state off disk. This file
+		// pins the self-seal blob, not the guard, and runs with no config dir.
+		assertNoMlsDowngrade: vi.fn(),
 		encryptGroupMessage: vi.fn(async () => ({
 			result: {
 				encrypted_payload: "GROUP-CIPHERTEXT",
@@ -56,6 +58,13 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 });
 
 const { AsyncRineClient } = await import("../client.js");
+const { stubWebFinger } = await import("../_webfinger-stub.js");
+
+// The 1:1 recipient, answered where the resolve actually leaves the process.
+// `send()` resolves through the recipient contract, which calls the agent
+// resolver inside the core bundle — a `vi.mock` on the exported
+// `resolveToUuid` is not on that path and would pass while being ignored.
+const webfinger = stubWebFinger({ "bot@acme.rine.network": RECIPIENT_ID });
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -114,6 +123,10 @@ function makeClient(): {
 
 afterEach(() => {
 	vi.clearAllMocks();
+});
+
+afterAll(() => {
+	webfinger.restore();
 });
 
 // ---------------------------------------------------------------------------

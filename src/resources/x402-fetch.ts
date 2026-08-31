@@ -93,7 +93,7 @@ export function createX402Fetch(
 		// replying non-2xx). The reservation is permanent — no refund path: a
 		// transport error that never reached the server over-counts today's spend,
 		// it never under-counts. No messageId here (the HTTP plane has no in-thread
-		// id), so the S6 double-pay guard does not apply.
+		// id), so the double-pay guard does not apply.
 		await reserveSpend(opts.configDir, opts.agentId, policy, requirement);
 		return doFetch(input, { ...init, headers: retryHeaders });
 	};

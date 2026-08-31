@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { stubWebFinger } from "../_webfinger-stub.js";
 
 const OUR_AGENT_ID = randomUUID();
 const PAYEE_ID = randomUUID();
@@ -33,8 +34,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		fetchAgents: vi.fn(async () => [
 			{ id: OUR_AGENT_ID, handle: "me@acme.rine.network" },
 		]),
-		resolveAgent: vi.fn(async () => OUR_AGENT_ID),
-		resolveToUuid: vi.fn(async () => PAYEE_ID),
+		resolveAgent: vi.fn(async () => ({ agentId: OUR_AGENT_ID })),
 		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
 		normalizeHandle: vi.fn((h: string) => h),
 		// Quote-ref resolution (ref load + self-decrypt + payee-issued proof)
@@ -282,7 +282,7 @@ describe("PaymentsResource payer", () => {
 
 	it("test_pay_same_quote_twice_is_already_paid_unless_allowRepay", async () => {
 		core.savePolicy(tmp, OUR_AGENT_ID, HAPPY_POLICY);
-		const quote = quoteMessage(); // stable id — the S6 double-pay guard keys on it
+		const quote = quoteMessage(); // stable id — the double-pay guard keys on it
 		const client = makeClient(quote);
 
 		await client.payments.pay(quote);
@@ -376,7 +376,18 @@ describe("PaymentsResource payee", () => {
 		const client = makeClient(quoteMessage());
 		const pr = paymentRequired();
 
-		await client.payments.quote("bob@acme.rine.network" as never, pr as never);
+		// The payee is resolved through the recipient contract, which asks
+		// WebFinger inside the core bundle — the seam a mocked `resolveToUuid`
+		// used to stand in for and is no longer on.
+		const webfinger = stubWebFinger({ "bob@acme.rine.network": PAYEE_ID });
+		try {
+			await client.payments.quote(
+				"bob@acme.rine.network" as never,
+				pr as never,
+			);
+		} finally {
+			webfinger.restore();
+		}
 
 		expect(posts).toHaveLength(1);
 		expect(posts[0]?.path).toBe("/messages");

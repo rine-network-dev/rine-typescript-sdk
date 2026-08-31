@@ -45,9 +45,9 @@ vi.mock("@rine-network/core", async () => {
 				handle: "stub@stub.rine.network",
 			},
 		]),
-		resolveAgent: vi.fn(
-			async () => "11111111-1111-4111-8111-111111111111",
-		),
+		resolveAgent: vi.fn(async () => ({
+			agentId: "11111111-1111-4111-8111-111111111111",
+		})),
 	};
 });
 

@@ -8,20 +8,27 @@
 import {
 	type AgentRead as CoreAgentRead,
 	type HttpClient as CoreHttpClient,
-
+	type ResolvedActor,
+	ACTING_AGENT_HEADER,
+	ACTOR_SURFACES,
+	MlsInitInFlightError,
+	assertNoMlsDowngrade,
 	encryptGroupMessage,
 	encryptMessage,
 	encryptMlsGroupMessage,
 	fetchAgents,
 	fetchRecipientKeys,
 	getOrCreateSenderKey,
+	isNoMlsStateError,
 	normalizeHandle,
 	processMlsWelcomes,
 	resolveAgent,
+	resolveRecipient,
 	resolveToUuid,
 	syncMlsGroup,
 } from "@rine-network/core";
-import { parse, parseCursorPage } from "../api/adapters.js";
+import { actingAgentHeader } from "../api/acting-agent.js";
+import { GroupReadSchema, parse, parseCursorPage } from "../api/adapters.js";
 import type { SDKHttpClient } from "../api/http.js";
 import type {
 	InboxOptions,
@@ -34,8 +41,6 @@ import type {
 import {
 	type DecryptedMessage,
 	DecryptedMessageSchema,
-	type GroupRead,
-	GroupReadSchema,
 	type MessageRead,
 	MessageReadSchema,
 	type SendAndWaitResult,
@@ -45,13 +50,16 @@ import type {
 	AgentHandle,
 	AgentUuid,
 	GroupHandle,
+	GroupRead,
 	GroupUuid,
 	MessageUuid,
 } from "../types.js";
-import { RineTimeoutError } from "../errors.js";
+import { ReplyAttributionError, RineTimeoutError } from "../errors.js";
+import { groupAcceptsMlsSendOnly } from "../format/groups.js";
 import { anySignal } from "../utils/abort.js";
 import { CursorPage } from "../utils/cursor-page.js";
 import { decryptEnvelope } from "./decrypt.js";
+import { resolveGroupHandle } from "./groups-resolve.js";
 
 // ---------------------------------------------------------------------------
 // MessagesResource
@@ -61,6 +69,32 @@ type Recipient = AgentHandle | AgentUuid | GroupHandle | GroupUuid;
 
 const DEFAULT_SEND_TYPE = "rine.v1.task_request";
 const DEFAULT_REPLY_TYPE = "rine.v1.task_response";
+
+/**
+ * What a body is built FOR, once the recipient slot has been decided.
+ *
+ * A record rather than the caller's string, because the two verbs that build a
+ * body decide the namespace by different rules and must keep doing so: `send`
+ * asks `resolveRecipient` — the contract's door, which reads a bare name as a
+ * group — and `sendAndWait` asks nothing wider than the whole handle it was
+ * given, because `POST /messages/sync` is 1:1 only and a bare word there can
+ * only be an agent handle with its org half dropped. Handing
+ * {@link MessagesResource.buildSendBody} a string would put that decision back
+ * inside the shared builder, where one verb's rule would silently become both.
+ *
+ * The group arm carries the ROW, not a handle: the resolve already read it, and
+ * `mls_group_id`/`mls_enabled` decide which envelope the message is sealed in.
+ * A builder handed a handle has to buy the same row again.
+ *
+ * ⚠️ Deliberately a type alias and not a `const`/`interface` declared here: the
+ * backend's `TO_HANDLE_BINDING_SITES` gate names the `to_handle` binding below
+ * after the nearest top-level `function`/`const`/`let`, which is
+ * {@link DEFAULT_REPLY_TYPE}. A value declared between the two renames a
+ * registered site and reds that gate for something that is not a defect.
+ */
+type SendTarget =
+	| { readonly kind: "group"; readonly group: GroupRead }
+	| { readonly kind: "agent"; readonly agentId: string };
 
 export class MessagesResource {
 	constructor(private readonly http: SDKHttpClient) {}
@@ -77,16 +111,64 @@ export class MessagesResource {
 		const op = this.beginOp(opts.signal);
 		try {
 			const core = this.http.getCoreHttpClient({ signal: op.signal });
-			const senderId = await this.resolveSenderId(core, opts.agent);
+			// One `GET /agents` for the whole send. `resolveSenderId` would
+			// fetch it anyway; the bare-recipient collision guard reads the very
+			// same list, and `fetchAgents` is uncached, so the list is fetched
+			// here once and handed to both.
+			const agents = await fetchAgents(core);
+			const senderId = await this.resolveSenderId(core, opts.agent, agents);
 
-			const body = await this.buildSendBody(core, senderId, to, payload, opts);
+			// The contract's recipient door (`rine-core/src/recipient-resolution.ts`),
+			// which is where the dispatch table, the reason each class routes where
+			// it does, and every refusal on it live. Nothing is restated here: this
+			// surface used to hold a private half of that dispatch and hand the
+			// answer back as a HANDLE, which the body builder then resolved a second
+			// time — one `GET /groups?handle=` per bare or sigiled group send, paid
+			// for a row the ladder had already read.
+			//
+			// `normalizeHandle` runs first, for the reason the Python twin does it
+			// (`_client.py`: `recipient_ladder(normalize_handle(to), to)`): the body
+			// builder normalised before it classified, so a short handle
+			// (`#devs@acme`) has always reached the group ladder whole. It moves no
+			// spelling between classes — the suffix is only ever appended to a
+			// dotless org half, and every class it could move between is `@`-free —
+			// but a refusal quotes the spelling it was handed, and this keeps the
+			// one this surface prints byte-identical.
+			//
+			// `agents` is the page fetched two lines up, handed over rather than
+			// fetched again (`ResolveOptions.agents`): `fetchAgents` is uncached by
+			// design and the bare-recipient collision guard reads the same list.
+			// `extraHeaders` is deliberately NOT passed — the resolve legs are
+			// org-scoped reads and `X-Rine-Agent` goes on `POST /messages` alone,
+			// so adding it here would change a request trace nothing about this
+			// send needs changed.
+			const recipient = await resolveRecipient(
+				core,
+				this.http.apiUrl,
+				normalizeHandle(to as string),
+				{ agents },
+			);
+			const body = await this.buildSendBody(
+				core,
+				senderId,
+				recipient.kind === "group"
+					? // The row crosses the SDK's Zod boundary exactly where
+						// `resolveGroupHandle` used to put it, so the builder reads the
+						// same shape `groups.get` answers with. `row` is set on every
+						// rung of the member ladder; a body that somehow carried none is
+						// refused here rather than read through a cast.
+						{ kind: "group", group: parse(GroupReadSchema, recipient.row) }
+					: { kind: "agent", agentId: recipient.id },
+				payload,
+				opts,
+			);
 
 			const raw = await this.http.post<unknown>("/messages", body, {
 				signal: op.signal,
 				operation: "send",
 				extraHeaders: mergeHeaders(
 					idempotencyHeader(opts.idempotencyKey),
-					agentOverrideHeader(opts.agent),
+					actingAgentHeader(opts.agent, senderId),
 				),
 			});
 			// `parse<T>(schema, data)` erases the precise Zod output type
@@ -128,7 +210,7 @@ export class MessagesResource {
 				},
 				signal: op.signal,
 				operation: "inbox",
-				extraHeaders: agentOverrideHeader(opts.agent),
+				extraHeaders: actingAgentHeader(opts.agent, agentId),
 			});
 			const page = parseCursorPage(DecryptedMessageSchema, raw);
 
@@ -183,7 +265,7 @@ export class MessagesResource {
 				{
 					signal: op.signal,
 					operation: "markDelivered",
-					extraHeaders: agentOverrideHeader(opts.agent),
+					extraHeaders: actingAgentHeader(opts.agent, agentId),
 				},
 			);
 			return raw?.marked ?? 0;
@@ -204,6 +286,19 @@ export class MessagesResource {
 	 * Failures on the HPKE path or after the sender-key retry populate
 	 * `decrypt_error` on the returned message instead of throwing, so
 	 * callers can branch on `msg.decrypt_error !== null`.
+	 *
+	 * **Reading a group message twice works, and it works because a local copy
+	 * is kept.** Both group regimes spend a one-time key at the first successful
+	 * decrypt, so the second read is answered from a cache this client writes:
+	 * the newest 256 messages per group, capped at 1 MiB of plaintext, in
+	 * `<configDir>/keys/<agentId>/group_reads/<groupId>.json` — an owner-only
+	 * file (0600) in an owner-only directory, deleted when this agent leaves the
+	 * group ITSELF. Being removed by somebody else deletes nothing here: the
+	 * departing client is what runs the wipe, and a removed agent runs nothing,
+	 * so its copy outlives the removal until the config dir is destroyed.
+	 * It is plaintext at rest and widens what a stolen config dir yields;
+	 * a replay is re-verified against the sender the server names on THIS read,
+	 * never served on the strength of the first one. There is no off switch.
 	 */
 	async read(messageId: MessageUuid, opts: ReadOptions = {}) {
 		const op = this.beginOp(opts.signal);
@@ -212,9 +307,15 @@ export class MessagesResource {
 			const agentId = await this.resolveSenderId(core, opts.agent);
 
 			const raw = await this.http.get<unknown>(`/messages/${messageId}`, {
+				// The RESOLVED id, not the caller's spelling: the server marks the
+				// acting agent's own delivery row, so the header has to name the
+				// same agent whose key decrypts the envelope one call later. The
+				// raw `opts.agent` is neither — it is absent whenever the id came
+				// from the SDK default, and may be a bare name the header does not
+				// accept.
 				signal: op.signal,
 				operation: "read",
-				extraHeaders: agentOverrideHeader(opts.agent),
+				extraHeaders: { [ACTING_AGENT_HEADER]: agentId },
 			});
 			const msg = parse(DecryptedMessageSchema, raw);
 
@@ -247,10 +348,37 @@ export class MessagesResource {
 		try {
 			const core = this.http.getCoreHttpClient({ signal: op.signal });
 
+			// 0. Who is reading, decided BEFORE the read — because the read is a
+			//    read. `GET /messages/{id}` marks the ACTING agent's delivery
+			//    row, and an unheadered fetch from a multi-agent org names
+			//    nobody and therefore marks nothing: the reply would land while
+			//    the message it answers stayed queued forever. `read()` carries
+			//    the header for exactly this reason and this call is the same
+			//    fetch by another name.
+			//
+			//    The hint, not the sender: the sender is not known until the
+			//    original has been read, and in the ordinary case — the addressee
+			//    answering its own message — the two are the same agent anyway.
+			//    With no hint at all the header is omitted and the server's
+			//    single-agent fallback answers as it always did. Resolving it here
+			//    also moves an unresolvable `opts.agent` to a refusal BEFORE the
+			//    request, where it costs nothing; the agent list is fetched once
+			//    and reused by step 2 below.
+			const agents = await fetchAgents(core);
+			const readerHint = opts.agent ?? this.defaultAgentHint();
+			const readerId = readerHint
+				? await this.resolveSenderId(core, readerHint, agents)
+				: undefined;
+
 			// 1. Fetch original to recover sender/recipient.
-			const original = parse(MessageReadSchema, await core.get(
-				`/messages/${messageId}`,
-			));
+			const original = parse(
+				MessageReadSchema,
+				await core.get(
+					`/messages/${messageId}`,
+					undefined,
+					readerId ? { [ACTING_AGENT_HEADER]: readerId } : undefined,
+				),
+			);
 			const recipientId = original.from_agent_id;
 			if (!recipientId) {
 				throw new Error(
@@ -268,7 +396,6 @@ export class MessagesResource {
 			//    the flow reach the "replying to your own message" guard below
 			//    instead of failing earlier inside `resolveSenderId` with a
 			//    confusing "not owned by current org" error.
-			const agents = await fetchAgents(core);
 			const ownedAgentIds = new Set(agents.map((a) => a.id));
 			const toAgentIdIfOwned =
 				original.to_agent_id && ownedAgentIds.has(original.to_agent_id)
@@ -283,6 +410,32 @@ export class MessagesResource {
 			if (recipientId === senderId) {
 				throw new Error(
 					`Cannot reply to your own message (${messageId}). Send a new message to continue the conversation.`,
+				);
+			}
+
+			// 3b. Refuse a reply the actor is not entitled to author.
+			//
+			//     Only the agent a message was addressed to can answer it. When
+			//     the caller names a different one — `opts.agent`, or the agent
+			//     the client was constructed with — this used to be sent anyway
+			//     and come back a 201 that said the wrong thing about who spoke.
+			//     Refuse instead, and NAME the addressee: the caller's only
+			//     question is which agent it should have been, and an unnamed
+			//     failure sends it looking at the keystore.
+			//
+			//     Before the encrypt, deliberately — a reply nobody is entitled
+			//     to author must not reach a key first.
+			//
+			//     Typed, because the Python SDK's twin is: a bare `Error` is not
+			//     `instanceof RineError`, so the one refusal a caller is most
+			//     likely to want to retry would be the one refusal that escapes
+			//     the SDK-wide catch, and its three ids would be readable only by
+			//     parsing the sentence.
+			if (original.to_agent_id && senderId !== original.to_agent_id) {
+				throw new ReplyAttributionError(
+					messageId,
+					senderId,
+					original.to_agent_id,
 				);
 			}
 
@@ -314,9 +467,15 @@ export class MessagesResource {
 				{
 					signal: op.signal,
 					operation: "reply",
+					// The RESOLVED sender, not the caller's spelling. `/reply` now
+					// files the reply from the acting agent rather than deriving one,
+					// so a multi-agent org whose sender came from the original's
+					// `to_agent_id` — a hint that never reached a header — would be
+					// refused for naming nobody. This is the id the payload was just
+					// sealed under, which is the one the header has to carry.
 					extraHeaders: mergeHeaders(
 						idempotencyHeader(opts.idempotencyKey),
-						agentOverrideHeader(opts.agent),
+						{ [ACTING_AGENT_HEADER]: senderId },
 					),
 				},
 			);
@@ -359,11 +518,17 @@ export class MessagesResource {
 			const senderId = await this.resolveSenderId(core, opts.agent);
 
 			// Build the full encrypted body — same as send() uses.
-			const body = await this.buildSendBody(core, senderId, to, payload, {
-				type: opts.type,
-				contentType: opts.contentType,
-				metadata: opts.metadata,
-			});
+			const body = await this.buildSendBody(
+				core,
+				senderId,
+				await this.syncSendTarget(core, to),
+				payload,
+				{
+					type: opts.type,
+					contentType: opts.contentType,
+					metadata: opts.metadata,
+				},
+			);
 
 			const timeoutMs = opts.timeout ?? 30_000;
 			const raw = await this.http.post<{
@@ -378,7 +543,7 @@ export class MessagesResource {
 					operation: "sendAndWait",
 					extraHeaders: mergeHeaders(
 						idempotencyHeader(opts.idempotencyKey),
-						agentOverrideHeader(opts.agent),
+						actingAgentHeader(opts.agent, senderId),
 					),
 				},
 			);
@@ -411,27 +576,57 @@ export class MessagesResource {
 	// -------------------------------------------------------------------------
 
 	/**
+	 * `sendAndWait`'s recipient rule, which is deliberately not `send`'s.
+	 *
+	 * 🔴 NOT `resolveRecipient`. That door reads a bare word as a group, and
+	 * `POST /messages/sync` is 1:1 only — routing `sendAndWait("ops")` through it
+	 * would turn a syntactic refusal into a group send the server then rejects.
+	 * What this verb does, and has always done, is normalise the whole handle and
+	 * read it: the classification {@link buildSendBody} used to hold for BOTH
+	 * verbs, kept for the one whose rule it actually is rather than left in the
+	 * shared builder where `send`'s migration would have silently become its own.
+	 *
+	 * ⚠️ A spelling that only becomes a group handle after normalisation — `#ops@`,
+	 * org half dropped — therefore still reaches the group arm here, because the
+	 * guard in {@link sendAndWait} reads the RAW spelling. The server refuses it.
+	 * That is this verb's shipped behaviour and is preserved, not endorsed;
+	 * tightening the guard changes what a caller sees.
+	 */
+	private async syncSendTarget(
+		core: CoreHttpClient,
+		to: Recipient,
+	): Promise<SendTarget> {
+		const target = normalizeHandle(to as string);
+		return isGroupHandle(target)
+			? { kind: "group", group: await resolveGroupHandle(core, target) }
+			: {
+					kind: "agent",
+					agentId: await resolveToUuid(this.http.apiUrl, target),
+				};
+	}
+
+	/**
 	 * Build the `POST /messages` body with real E2EE output.
 	 *
-	 * - Group handle → `getOrCreateSenderKey` → `encryptGroupMessage` → body
-	 *   carries `to_handle` + sender-key envelope.
-	 * - Everything else (agent handle, agent UUID, group UUID) → resolve to
-	 *   UUID via rine-core, HPKE-seal with `encryptMessage`, body carries
-	 *   `to_agent_id` + HPKE envelope.
+	 * - {@link SendTarget} `group` → `getOrCreateSenderKey` → `encryptGroupMessage`
+	 *   (or the MLS branch) → body carries `to_handle` + the group envelope.
+	 * - {@link SendTarget} `agent` → HPKE-seal with `encryptMessage` → body
+	 *   carries `to_agent_id` + the 1:1 envelope.
 	 *
-	 * Note on group UUIDs: the server body shape for groups requires the
-	 * handle (`to_handle`). Callers routing a group by UUID must pass the
-	 * group handle instead — the UUID form is accepted at the type level for
-	 * API symmetry but will be encrypted as a 1:1 and rejected server-side.
+	 * 🔴 It no longer decides WHICH of the two a recipient is, and that is the
+	 * point of the record: the two verbs that build a body decide by different
+	 * rules, and a shared classifier here handed both of them whichever rule it
+	 * happened to hold. A group UUID no longer reaches this method as a group at
+	 * all — `resolveRecipient` answers it in the agent namespace, exactly as the
+	 * old `normalizeHandle`/`isGroupHandle` pair did.
 	 */
 	private async buildSendBody(
 		core: CoreHttpClient,
 		senderId: string,
-		to: Recipient,
+		target: SendTarget,
 		payload: unknown,
 		opts: SendOptions,
 	): Promise<Record<string, unknown>> {
-		const target = normalizeHandle(to as string);
 		const base: Record<string, unknown> = {
 			type: opts.type ?? DEFAULT_SEND_TYPE,
 			content_type: opts.contentType ?? "application/json",
@@ -442,14 +637,39 @@ export class MessagesResource {
 		if (opts.conversationMetadata)
 			base.conversation_metadata = opts.conversationMetadata;
 
-		if (isGroupHandle(target)) {
-			// Resolve the group to inspect its `mls_group_id` latch. Non-null ⇒
-			// the group uses MLS (route through `encryptMlsGroupMessage`); null
-			// ⇒ the existing sender-key path. The rine group UUID (`group.id`)
-			// is the only MLS state key — never the opaque `mls_group_id`.
-			const group = await this.resolveGroup(core, target);
+		if (target.kind === "group") {
+			// The row the resolve already read: the server's account of this group's
+			// encryption is the only one a client gets, and both the guard and the
+			// branch below read it. `group.id` is the only MLS state key — never the
+			// `mls_group_id` latch.
+			const group = target.group;
+			// 🔴 Everything downstream addresses the group the SERVER holds, never
+			// the spelling the caller composed. `POST /messages` looks
+			// `to_handle` up by exact equality, and the resolver's fallback
+			// exists precisely because the two can differ — it resolves a
+			// handle whose ORG half was
+			// fabricated, the shape a model produces when it copies the domain out
+			// of a tool description. Posting the spelling sends that fabrication:
+			// the message is sealed for the right group and then refused with a bare
+			// `Group not found`, which is indistinguishable from the ladder not
+			// working at all. The resolve alone was never the whole fix.
+			const groupHandle = group.handle;
+			// The SEND question, not the render question; `groupAcceptsMlsSendOnly`
+			// documents why `mls_group_id` alone walks into a server 409.
+			const mlsOnly = groupAcceptsMlsSendOnly(group);
 
-			if (group.mls_group_id !== null) {
+			// The guard goes HERE, between the resolve and the branch, because
+			// reaching the sender-key branch has already leaked the key
+			// (`assertNoMlsDowngrade`). No fallback and no sender-key retry.
+			assertNoMlsDowngrade(this.http.configDir, senderId, group.id, mlsOnly);
+
+			if (mlsOnly) {
+				// The row's handle, not the caller's spelling — the same argument the
+				// `to_handle` comment above makes, and what `rine-mcp` already throws
+				// (`tools/messaging.ts`). A caller who fabricated the org half used to
+				// be told a group it never named was initialising.
+				if (group.mls_group_id === null)
+					throw new MlsInitInFlightError(groupHandle);
 				const result = await this.encryptMlsWithRecovery(
 					core,
 					senderId,
@@ -458,7 +678,7 @@ export class MessagesResource {
 				);
 				return {
 					...base,
-					to_handle: target,
+					to_handle: groupHandle,
 					...result,
 				};
 			}
@@ -467,13 +687,13 @@ export class MessagesResource {
 			// distribution fan-out so multi-agent orgs route key distributions
 			// through the right mailbox.
 			const extraHeaders: Record<string, string> = {
-				"X-Rine-Agent": senderId,
+				[ACTING_AGENT_HEADER]: senderId,
 			};
 			const { state, groupId } = await getOrCreateSenderKey(
 				core,
 				this.http.configDir,
 				senderId,
-				target,
+				groupHandle,
 				extraHeaders,
 			);
 			const { result } = await encryptGroupMessage(
@@ -485,15 +705,16 @@ export class MessagesResource {
 			);
 			return {
 				...base,
-				to_handle: target,
+				to_handle: groupHandle,
 				...result,
 			};
 		}
 
-		// 1:1 HPKE path. resolveToUuid accepts UUIDs (pass-through) and agent
-		// handles (WebFinger lookup). Raw bare names are not supported here —
-		// the SDK requires a handle or UUID for the recipient.
-		const recipientId = await resolveToUuid(this.http.apiUrl, target);
+		// 1:1 HPKE path. The id was resolved by whichever door the calling verb
+		// asked (`resolveRecipient` for `send`, {@link syncSendTarget} for
+		// `sendAndWait`); both reach `resolveToUuid`, which accepts a UUID
+		// (pass-through) or an agent handle (WebFinger lookup).
+		const recipientId = target.agentId;
 		const recipientKeys = await fetchRecipientKeys(core, recipientId);
 		const encrypted = await encryptMessage(
 			this.http.configDir,
@@ -516,27 +737,23 @@ export class MessagesResource {
 	}
 
 	/**
-	 * Resolve a group handle to its `GroupRead` so the send path can inspect
-	 * the `mls_group_id` latch. Mirrors the server's handle lookup
-	 * (`GET /groups?handle=…`) used by the CLI/MCP group send paths.
-	 */
-	private async resolveGroup(
-		core: CoreHttpClient,
-		handle: string,
-	): Promise<GroupRead> {
-		const raw = await core.get("/groups", { handle });
-		const page = parseCursorPage(GroupReadSchema, raw);
-		const group = page.items[0];
-		if (!group) throw new Error(`Group not found: ${handle}`);
-		return group;
-	}
-
-	/**
-	 * MLS group send with one-shot recovery. If the agent has no local MLS
-	 * state for the group, install pending Welcomes + sync (epoch advance),
-	 * then retry the encrypt once. Mirrors the sender-key auto-recovery in the
-	 * read path. `encryption_version` is `"mls-v1"`, set by core — never
-	 * overridden here.
+	 * MLS group send with a pre-sync and one-shot recovery.
+	 *
+	 * 🔴 **The pre-sync is a correctness step, not a nicety.** A member sends at
+	 * whatever epoch its local state stands on, and a message sealed at a stale
+	 * epoch is one every member who joined after that epoch can never open. This
+	 * SDK was the only one of the three that did not do it — the CLI
+	 * (`commands/messages.ts`) and the Python SDK (`_mls/messages.py`
+	 * `_sync_quietly`) both have, which is why an agent sending through this SDK
+	 * could sit twenty-five commits behind a group it had joined AND sent into.
+	 * Failures are swallowed: the recovery below answers the one that matters
+	 * (no local state at all), and every other failure leaves the send exactly
+	 * where it would have been.
+	 *
+	 * If the agent has no local MLS state for the group, install pending
+	 * Welcomes + sync (epoch advance), then retry the encrypt once. Mirrors the
+	 * sender-key auto-recovery in the read path. `encryption_version` is
+	 * `"mls-v1"`, set by core — never overridden here.
 	 */
 	private async encryptMlsWithRecovery(
 		core: CoreHttpClient,
@@ -544,6 +761,9 @@ export class MessagesResource {
 		groupId: string,
 		payload: unknown,
 	): Promise<Awaited<ReturnType<typeof encryptMlsGroupMessage>>> {
+		await syncMlsGroup(this.http.configDir, senderId, groupId, core, {
+			[ACTING_AGENT_HEADER]: senderId,
+		}).catch(() => {});
 		try {
 			return await encryptMlsGroupMessage(
 				this.http.configDir,
@@ -552,13 +772,20 @@ export class MessagesResource {
 				payload,
 			);
 		} catch (err) {
-			if (
-				err instanceof Error &&
-				err.message.startsWith("No MLS state for group")
-			) {
-				await processMlsWelcomes(this.http.configDir, senderId, core);
+			// The predicate rine-core owns, not a copy of its message text.
+			if (isNoMlsStateError(err)) {
+				// Scoped, because unlike the pre-sync above this call is UNCAUGHT:
+				// left unscoped it raises whichever refusal arrived first in the
+				// pass, so a substituted Welcome for some other group would abort
+				// this send with that group's text. `forGroup` narrows only which
+				// refusal is the answer to THIS caller's question — every Welcome in
+				// the batch still installs. The Python twin reaches the same scoping
+				// via `install_mls_state`.
+				await processMlsWelcomes(this.http.configDir, senderId, core, {
+					forGroup: groupId,
+				});
 				await syncMlsGroup(this.http.configDir, senderId, groupId, core, {
-					"X-Rine-Agent": senderId,
+					[ACTING_AGENT_HEADER]: senderId,
 				});
 				return await encryptMlsGroupMessage(
 					this.http.configDir,
@@ -575,7 +802,9 @@ export class MessagesResource {
 	 * Resolve the sender agent to a UUID suitable for loading local keys.
 	 *
 	 * Precedence: explicit override → SDK default agent → single-agent
-	 * shortcut (errors on multi-agent orgs).
+	 * shortcut (errors on multi-agent orgs). A one-agent org whose actor value
+	 * names nobody acts as that agent and warns; a multi-agent one still
+	 * refuses, because there is a choice only the caller can make.
 	 *
 	 * Makes one `GET /agents` request per send; no local caching.
 	 *
@@ -594,19 +823,57 @@ export class MessagesResource {
 		explicit: string | undefined,
 		preFetchedAgents?: CoreAgentRead[],
 	): Promise<string> {
+		const resolved = await this.resolveSenderActor(
+			core,
+			explicit,
+			preFetchedAgents,
+		);
+		// The one-agent fallback, on the surface where the actor is fixed by
+		// the operator at construction and is not a model-visible parameter: the
+		// audience for "you named X, Y acted" is whoever wired the client, so it
+		// goes to the operator log the rest of this stack already warns on, not
+		// onto a result the caller did not ask a question with. The one place it
+		// is logged, so a caller holding the value object gets to choose again.
+		if (resolved.warning !== undefined) console.warn(`rine: ${resolved.warning}`);
+		return resolved.agentId;
+	}
+
+	/**
+	 * {@link resolveSenderId}'s whole answer, including anything it has to say
+	 * about the value it was given.
+	 *
+	 * Separate from `resolveSenderId` only so the note has exactly one
+	 * production point: this one returns it, that one logs it. A surface that
+	 * wants to render it itself (`AsyncRineClient.resolveActor`) takes this and
+	 * logs nothing.
+	 */
+	async resolveSenderActor(
+		core: CoreHttpClient,
+		explicit: string | undefined,
+		preFetchedAgents?: CoreAgentRead[],
+	): Promise<ResolvedActor> {
 		const hint = explicit ?? this.defaultAgentHint();
 		const agents = preFetchedAgents ?? (await fetchAgents(core));
-		const senderId = await resolveAgent(this.http.apiUrl, agents, hint);
-		if (!agents.some((a) => a.id === senderId)) {
+		// `ACTOR_SURFACES.ts`, not the default `cli`: this refusal is read by an
+		// SDK caller who has no `--agent` flag to pass and no `RINE_AGENT` this
+		// stack reads, so the CLI's wording would
+		// name two levers that do not exist here.
+		const resolved = await resolveAgent(
+			agents,
+			hint,
+			undefined,
+			ACTOR_SURFACES.ts,
+		);
+		if (!agents.some((a) => a.id === resolved.agentId)) {
 			throw new Error(
-				`Agent ${senderId} is not owned by the current org — cannot sign on its behalf. Pass an agent from your own org via opts.agent, or omit it to use the default.`,
+				`Agent ${resolved.agentId} is not owned by the current org — cannot sign on its behalf. Pass an agent from your own org via opts.agent, or omit it to use the default.`,
 			);
 		}
-		return senderId;
+		return resolved;
 	}
 
 	private defaultAgentHint(): string | undefined {
-		return this.http.agentHeader?.["X-Rine-Agent"];
+		return this.http.agentHeader?.[ACTING_AGENT_HEADER];
 	}
 
 	/**
@@ -655,13 +922,6 @@ function idempotencyHeader(
 	// `Header(alias="Idempotency-Key")` — see src/rine/api/messages.py:747.
 	if (!key) return undefined;
 	return { "Idempotency-Key": key };
-}
-
-function agentOverrideHeader(
-	agent: string | undefined,
-): Record<string, string> | undefined {
-	if (!agent) return undefined;
-	return { "X-Rine-Agent": agent };
 }
 
 function mergeHeaders(

@@ -2,14 +2,14 @@
 
 [![npm version](https://img.shields.io/npm/v/@rine-network/sdk.svg)](https://www.npmjs.com/package/@rine-network/sdk)
 [![license](https://img.shields.io/badge/license-EUPL--1.2-blue.svg)](https://joinup.ec.europa.eu/collection/eupl/eupl-text-eupl-12)
-[![node](https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg)](https://nodejs.org)
+[![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
 
 TypeScript SDK for [Rine](https://rine.network) — end-to-end encrypted messaging for AI agents.
 
 - **Agentic-first.** `defineAgent({ client, handlers })` wraps the decrypt + reply loop so your handler is the only code you write.
 - **End-to-end encrypted.** HPKE for DMs, MLS (RFC 9420) for groups. The server never sees plaintext.
 - **Typed.** One Standard Schema v1 validator narrows `msg.plaintext` end-to-end through `send<T>`, `read<T>`, `messages<T>`, and `defineAgent<T>`.
-- **Node 22+ only.** ESM-only; top-level `await` and `await using` are assumed.
+- **Node 20+ only.** ESM-only.
 
 ## Install
 
@@ -21,11 +21,11 @@ You also need an agent identity on the network. The easiest way is the CLI — `
 
 ```bash
 npm install -g @rine-network/cli
-rine onboard
+rine onboard --email you@yourdomain.com --name "My Org" --slug my-org --agent-name my-agent
 rine whoami   # confirm
 ```
 
-See `rine --help` or [rine.network](https://rine.network) for the full onboarding flow. `@rine-network/core` (which contains the HPKE + sender-key crypto) is resolved as a transitive dependency — no separate install needed.
+See `rine --help` or [rine.network](https://rine.network) for the full onboarding flow. `@rine-network/core` (which contains the HPKE, sender-key and MLS crypto) is resolved as a transitive dependency — no separate install needed.
 
 ## 30-second quickstart
 
@@ -57,9 +57,11 @@ That's a complete receive → decrypt → process → reply loop. The SSE layer 
 
 ## Core concepts
 
-**End-to-end encryption.** Every outbound message is encrypted client-side: HPKE for DMs (`hpke-v1`, or `hpke-hybrid-v1` to a peer that publishes a PQ key), MLS for groups (`mls-v1`). `groups.create()` enables MLS by default; pass `{ enableMls: false }` for a sender-key group (`sender-key-v1`), which is what a Python-SDK member needs in order to read and post. The server stores opaque ciphertext and routes envelopes; it cannot read plaintext. The SDK delegates crypto entirely to [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) — the same code path the CLI and MCP server use. You never touch keys unless you want to rotate them via `client.rotateKeys()`.
+**End-to-end encryption.** Every outbound message is encrypted client-side: HPKE for DMs (`hpke-v1`, or `hpke-hybrid-v1` to a peer that publishes a PQ key), post-quantum MLS for groups (`mls-v1`). `groups.create()` enables MLS by default and requires a `visibility`; pass `{ enableMls: false }` for a sender-key group (`sender-key-v1`), whose bodies are classical. Open-enrollment groups are always sender-key groups — the server does not allow MLS there — so they are classical whatever `enableMls` says. Members on the Python SDK, the CLI and MCP all read and post MLS groups. The server stores opaque ciphertext and routes envelopes; it cannot read plaintext. The SDK delegates crypto entirely to [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) — the same code path the CLI and MCP server use. You never touch keys unless you want to rotate them via `client.rotateKeys()`.
 
 **`defineAgent`.** The actor-style loop. Either a type-routed `handlers` dict (recommended — SSE-layer filter skips unmatched types before decrypt) or a single `onMessage` catch-all — never both. Lifecycle is `start()` / `stop()` / `await using agent = defineAgent(...)`. Handler throws are caught and routed to `onError({ stage: 'handler' })`; the loop keeps running.
+
+**Groups.** `groups.create()` takes a required `visibility` and an optional `members` roster that invites the whole list in the founding request. A roster and an `invite` both **invite**; neither seats, and each unaccepted invitation holds a seat until it is accepted or expires after seven days. A group holds at most 500 seats. On a `majority` or `unanimity` group an `invite` **nominates**: it files a join request that the members the group had at that moment decide, and `groups.vote()` is the only thing that seats. `groups.list()` and `groups.members()` authorise on the org — every group any of your agents is seated in, and the whole roster — and say which agents those are: each group carries `member_agent_ids` and each roster row carries `is_own_org`. An `invite` is read against the acting agent instead, which must itself hold a seat. `groups.sync()` recovers a group this agent has fallen out of step with — it replays what it missed, and resyncs by RFC 9420 external commit when replay cannot reach.
 
 **`messages()` iterator.** `for await (const msg of client.messages({ type, schema }))`. Cleartext `type` filter runs before decrypt. Typed payloads via Standard Schema v1: supply `schema` and `msg.plaintext` narrows to `T | null`. Use this when you want explicit control over dispatch — for the common case, `defineAgent` is the higher-level wrapper.
 
@@ -81,16 +83,19 @@ console.log(result.payment.id);   // the sent rine.v1.x402_payment
 
 ## Examples
 
-All runnable examples live in [`examples/`](./examples). Each is < 60 lines and compiles under `examples/tsconfig.json` — run them with `npx tsx examples/<file>`.
+Runnable examples live in [`examples/`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples) — seventeen of them, each compiling under `examples/tsconfig.json`. Run one with `npx tsx examples/<file>`. The table below is the tour; `onboard.ts`, `discovery.ts`, `middleware.ts`, `watch-loop.ts`, `webhook-receiver.ts`, `spiffe-verify.ts`, `x402-payer.ts` and `x402-payee.ts` cover the rest.
 
 | File | What it shows |
 | --- | --- |
-| [`defineAgent-quickstart.ts`](./examples/defineAgent-quickstart.ts) | The README quickstart — type-routed `handlers` dict + `await using` disposal. |
-| [`messages-loop.ts`](./examples/messages-loop.ts) | Lowest-level decrypted iterator with a pre-decrypt `type` filter and Standard Schema narrowing. |
-| [`group-send.ts`](./examples/group-send.ts) | Create a group, invite a second agent, send to it, read back. |
-| [`conversation-turntaking.ts`](./examples/conversation-turntaking.ts) | `client.conversation(id)` scope builder — multi-turn exchange without touching `conversation_id`. |
-| [`typed-task.ts`](./examples/typed-task.ts) | End-to-end typed payload: one Zod schema narrows both sides. |
-| [`vercel-ai-interop.ts`](./examples/vercel-ai-interop.ts) | Wire `defineAgent` to `generateText` from the `ai` package. |
+| [`defineAgent-quickstart.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/defineAgent-quickstart.ts) | The README quickstart — type-routed `handlers` dict + `await using` disposal. |
+| [`messages-loop.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/messages-loop.ts) | Lowest-level decrypted iterator with a pre-decrypt `type` filter and Standard Schema narrowing. |
+| [`group-send.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-send.ts) | Create a group, invite a second agent, send to it, read back. |
+| [`group-moderated.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-moderated.ts) | A majority-enrollment group: nominate an agent, read the requests, cast the vote that seats it. |
+| [`group-sync.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-sync.ts) | Recover a group this agent fell out of step with — replay, then RFC 9420 resync. |
+| [`group-leave.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-leave.ts) | Leaving and removing: what a departure retires locally and what it does not. |
+| [`conversation-turntaking.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/conversation-turntaking.ts) | `client.conversation(id)` scope builder — multi-turn exchange without touching `conversation_id`. |
+| [`typed-task.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/typed-task.ts) | End-to-end typed payload: one Zod schema narrows both sides. |
+| [`vercel-ai-interop.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/vercel-ai-interop.ts) | Wire `defineAgent` to `generateText` from the `ai` package. |
 
 ## API surface
 
@@ -110,11 +115,17 @@ client.messages<T>({ type?, schema?, signal? })   // AsyncIterable<DecryptedMess
 client.conversation(convId)                       // ConversationScope
 defineAgent<T>({ client, handlers | onMessage, schema?, onError? })
 
-// Identity / discovery / groups / webhooks
+// Identity / discovery / webhooks
 client.whoami() / createAgent() / rotateKeys() / ...
 client.discover() / client.inspect() / client.discoverGroups()
-client.groups.list() / create() / join() / invite() / members() / ...
 client.webhooks.create() / list() / deliveries() / ...
+
+// Groups
+client.groups.create(name, { visibility, enrollment?, members? })
+client.groups.list() / get() / update() / delete() / members()
+client.groups.join() / leave() / invite(groupId, agentIds) / removeMember()
+client.groups.listRequests(groupId) / listInvites() / vote(groupId, requestId, choice)
+client.groups.sync() / resumeMlsAdmission()   // recovery
 
 // Payments (x402)
 client.payments.pay(quote, { autoPay?, emitMarker?, allowRepay?, awaitReceipt? })
@@ -122,18 +133,19 @@ client.payments.createWallet() / walletAddress() / setPolicy(policy)
 client.payments.quote() / fulfill() / awaitReceipt(convId)   // payee side
 ```
 
-Full method inventory lives in [`src/index.ts`](./src/index.ts) — the SDK exports every public type alongside the runtime surface so `Ctrl+Space` in your editor is the fastest reference.
+Full method inventory lives in [`src/index.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/src/index.ts) — the SDK exports every public type alongside the runtime surface so `Ctrl+Space` in your editor is the fastest reference.
 
 ## Compatibility
 
-- **Node 22+** only. The SDK uses `AsyncDisposable`, `await using`, and top-level `await`; older runtimes will not work.
+- **Node 20+** only.
 - **ESM only.** No CJS build. Projects still on CommonJS should use dynamic `import()`.
 - **TypeScript 5.7+** recommended for Standard Schema v1 inference and the stricter `noUncheckedIndexedAccess` path the SDK is built with.
 - **Node only.** The SDK targets server runtimes; there is no browser build.
+- **Linux or macOS.** The MLS group core arrives as a prebuilt addon for Linux (x64/arm64, glibc and musl) and macOS (x64/arm64); Windows does not ship.
 
 ## Requirements
 
-- Node.js >= 22
+- Node.js >= 20
 
 ## License
 

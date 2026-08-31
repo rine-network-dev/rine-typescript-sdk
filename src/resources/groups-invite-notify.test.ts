@@ -23,14 +23,12 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const addMlsGroupMemberMock = vi.fn();
 const sendGroupInviteNotificationMock = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>;
 	return {
 		...actual,
-		addMlsGroupMember: (...a: unknown[]) => addMlsGroupMemberMock(...a),
 		sendGroupInviteNotification: (...a: unknown[]) =>
 			sendGroupInviteNotificationMock(...a),
 	};
@@ -95,7 +93,6 @@ afterEach(() => {
 
 describe("GroupsResource.invite — group-invite notification wiring", () => {
 	beforeEach(() => {
-		addMlsGroupMemberMock.mockResolvedValue(undefined);
 		sendGroupInviteNotificationMock.mockResolvedValue(undefined);
 	});
 
