@@ -405,9 +405,11 @@ describe("sendAndWait() — short-handle normalization", () => {
 	});
 
 	it("short group handle is rejected by sendAndWait", async () => {
-		// sendAndWait checks isGroupHandle on the raw (pre-normalization) handle
-		// before entering buildSendBody. The GROUP_HANDLE_RE matches short-form
-		// group handles like "#team@acme" so the rejection must fire.
+		// sendAndWait classifies the raw (pre-normalization) spelling before
+		// entering buildSendBody, and `classifyReference` reads the sigil alone —
+		// so a short-form `#team@acme` is refused here for the same reason
+		// `#team` and `#team@acme.rine.network` are, rather than for the org half
+		// `GROUP_HANDLE_RE` used to insist on.
 		const { http } = makeHttpStub({});
 		const messages = new MessagesResource(http);
 

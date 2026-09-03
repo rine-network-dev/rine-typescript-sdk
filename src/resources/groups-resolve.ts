@@ -8,10 +8,9 @@
  * exposes it to callers, `MessagesResource` uses it on the send path, and the
  * transcript read uses it to find the group it is about to read.
  *
- * The lookup itself is `rine-core`'s (`resolveGroup` /
- * `resolveGroupByHandle`) — the CLI and the MCP server reach the same three
- * rungs through the same function, because a refusal that differed per surface
- * would be a refusal that drifts. What this module adds is the SDK's own
+ * The lookup itself is `rine-core`'s (`resolveGroup`) — the CLI and the MCP
+ * server reach the same three rungs through the same function, because a
+ * refusal that differed per surface would be a refusal that drifts. What this module adds is the SDK's own
  * contract: every response crosses the boundary through its Zod schema, and an
  * id that is about to become a URL path segment is branded, not asserted.
  */
@@ -22,7 +21,6 @@ import type { GroupHandle, GroupRead, GroupUuid } from "../types.js";
 import {
   type HttpClient as CoreHttpClient,
   resolveGroup,
-  resolveGroupByHandle,
   resolveGroupUuidForJoin,
 } from "@rine-network/core";
 
@@ -108,25 +106,6 @@ export function selectGroup(target: GroupSelector): {
   return typeof target === "string"
     ? { id: target, row: undefined }
     : { id: target.id, row: target.row };
-}
-
-/**
- * Resolve a group handle (`#name@org`) to its validated `GroupRead`.
- *
- * The send path needs the row, not the id: `mls_group_id` and `mls_enabled`
- * decide which envelope a message is sealed in, and the server's account of
- * that is the only one a client gets.
- *
- * The short handle (`#devs@acme`) and the full one both resolve — the core
- * lookup normalises before it asks, which the SDK's own copy never did.
- *
- * @throws {Error} No group of that handle is visible to this caller.
- */
-export async function resolveGroupHandle(
-  core: CoreHttpClient,
-  handle: string,
-): Promise<GroupRead> {
-  return parse(GroupReadSchema, await resolveGroupByHandle(core, handle));
 }
 
 /**

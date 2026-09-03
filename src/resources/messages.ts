@@ -8,11 +8,14 @@
 import {
 	type AgentRead as CoreAgentRead,
 	type HttpClient as CoreHttpClient,
+	type RecipientTarget,
 	type ResolvedActor,
 	ACTING_AGENT_HEADER,
 	ACTOR_SURFACES,
 	MlsInitInFlightError,
+	REF_CLASS,
 	assertNoMlsDowngrade,
+	classifyReference,
 	encryptGroupMessage,
 	encryptMessage,
 	encryptMlsGroupMessage,
@@ -22,6 +25,7 @@ import {
 	isNoMlsStateError,
 	normalizeHandle,
 	processMlsWelcomes,
+	readableGroupById,
 	resolveAgent,
 	resolveRecipient,
 	resolveToUuid,
@@ -44,7 +48,6 @@ import {
 	type MessageRead,
 	MessageReadSchema,
 	type SendAndWaitResult,
-	isGroupHandle,
 } from "../types.js";
 import type {
 	AgentHandle,
@@ -59,13 +62,32 @@ import { groupAcceptsMlsSendOnly } from "../format/groups.js";
 import { anySignal } from "../utils/abort.js";
 import { CursorPage } from "../utils/cursor-page.js";
 import { decryptEnvelope } from "./decrypt.js";
-import { resolveGroupHandle } from "./groups-resolve.js";
 
 // ---------------------------------------------------------------------------
 // MessagesResource
 // ---------------------------------------------------------------------------
 
 type Recipient = AgentHandle | AgentUuid | GroupHandle | GroupUuid;
+
+/**
+ * What `sendAndWait` says about a group, whichever way the group was named.
+ *
+ * 🔴 **Append to this sentence; never change its head.** `rine-mastra`
+ * (`src/errors.ts`) and `rine-eve` (`src/errors.ts`) each hold a
+ * `GROUP_ON_WAIT_PREFIX` and `startsWith` it to reach the one refusal the
+ * backend pins byte-for-byte across five packages
+ * (`GROUP_ON_WAIT_MESSAGE_COPIES`, `tests/helpers_client_paths.py`). Both
+ * packages are invisible to `ci.sh` and typecheck-gated inside the publish
+ * train's `set -e` subshell, so a reworded head aborts a release mid-upload.
+ *
+ * One constant for BOTH classes this verb refuses — the sigil and the group
+ * UUID — and deliberately not a second sentence for the id. The wording is the
+ * one already published; the only reader of the difference between "handle" and
+ * "id" is a developer holding the `Error`, because every connector surface
+ * shows a model the same pinned sentence either way.
+ */
+const GROUP_ON_WAIT_REFUSAL =
+	"sendAndWait() does not support group handles — the server's /messages/sync endpoint is 1:1 only.";
 
 const DEFAULT_SEND_TYPE = "rine.v1.task_request";
 const DEFAULT_REPLY_TYPE = "rine.v1.task_response";
@@ -148,6 +170,7 @@ export class MessagesResource {
 				normalizeHandle(to as string),
 				{ agents },
 			);
+			warnGroupIdRecipient(recipient);
 			const body = await this.buildSendBody(
 				core,
 				senderId,
@@ -496,18 +519,25 @@ export class MessagesResource {
 	 *
 	 * Returns `{ sent, reply }`. `reply` is null on long-poll timeout.
 	 *
-	 * Note: the server rejects group handles on `/messages/sync`, so this
-	 * method is 1:1 DMs only.
+	 * Note: `/messages/sync` is 1:1 only, so a group is refused — by handle
+	 * here, and by its own id in {@link syncSendTarget}.
 	 */
 	async sendAndWait(
 		to: Recipient,
 		payload: unknown,
 		opts: SendAndWaitOptions = {},
 	): Promise<SendAndWaitResult> {
-		if (isGroupHandle(to as string)) {
-			throw new Error(
-				"sendAndWait() does not support group handles — the server's /messages/sync endpoint is 1:1 only.",
-			);
+		// The shared classification table, not `isGroupHandle`. That predicate is
+		// a whole `#name@org` handle's shape, so the org-less `#ops` every other
+		// surface refuses as a group used to fall past this guard and come back
+		// `Invalid agent identifier '#ops'` from the AGENT namespace — one
+		// spelling with two answers depending on which client a caller stood on.
+		// `classifyReference` asks what the string names, which is this guard's
+		// actual question, and it reads the RAW spelling: `#ops@` is a group as
+		// written and is refused here rather than sealed, posted, and answered
+		// with the server's `422`.
+		if (classifyReference(to as string) === REF_CLASS.group) {
+			throw new Error(GROUP_ON_WAIT_REFUSAL);
 		}
 
 		// Schema validation (request side) runs at the client-layer wrapper.
@@ -581,28 +611,45 @@ export class MessagesResource {
 	 * 🔴 NOT `resolveRecipient`. That door reads a bare word as a group, and
 	 * `POST /messages/sync` is 1:1 only — routing `sendAndWait("ops")` through it
 	 * would turn a syntactic refusal into a group send the server then rejects.
-	 * What this verb does, and has always done, is normalise the whole handle and
-	 * read it: the classification {@link buildSendBody} used to hold for BOTH
-	 * verbs, kept for the one whose rule it actually is rather than left in the
-	 * shared builder where `send`'s migration would have silently become its own.
+	 * So the bare and empty classes fall to the agent namespace here exactly as
+	 * they always have, and this verb never resolves a recipient INTO a group.
 	 *
-	 * ⚠️ A spelling that only becomes a group handle after normalisation — `#ops@`,
-	 * org half dropped — therefore still reaches the group arm here, because the
-	 * guard in {@link sendAndWait} reads the RAW spelling. The server refuses it.
-	 * That is this verb's shipped behaviour and is preserved, not endorsed;
-	 * tightening the guard changes what a caller sees.
+	 * 🔴 **It only has to RECOGNISE one.** A UUID is the single spelling that
+	 * reaches both namespaces, and this verb used to hand every one of them to
+	 * `resolveToUuid` — so a group's own id was HPKE-sealed to an agent that does
+	 * not exist and came back the server's bare `404: Agent not found`, on the
+	 * five published surfaces that wrap this SDK. One org-scoped
+	 * {@link readableGroupById} answers it, the same read `send` pays through
+	 * `resolveRecipient`'s id rung and the same one `rine-mcp` pays through its
+	 * ladder, and a 404/403 miss falls through to the agent rung below.
+	 *
+	 * 🔴 **Eager, and the lazy variant is rejected rather than unbuilt**: probing
+	 * only after the 1:1 path had already answered `404` would save one GET on a
+	 * verb that then long-polls for up to 300 s, and would buy two request orders
+	 * for one question across two stacks. The Python twin is
+	 * `RineClient._a_group_the_sync_endpoint_refuses`.
+	 *
+	 * `extraHeaders` is deliberately not passed, for the reason {@link send}
+	 * gives at its own resolve: the probe is an org-scoped read, and
+	 * `X-Rine-Agent` goes on `POST /messages/sync` alone.
+	 *
+	 * @throws {Error} The UUID names a group this org may read.
 	 */
 	private async syncSendTarget(
 		core: CoreHttpClient,
 		to: Recipient,
 	): Promise<SendTarget> {
 		const target = normalizeHandle(to as string);
-		return isGroupHandle(target)
-			? { kind: "group", group: await resolveGroupHandle(core, target) }
-			: {
-					kind: "agent",
-					agentId: await resolveToUuid(this.http.apiUrl, target),
-				};
+		if (
+			classifyReference(target) === REF_CLASS.id &&
+			(await readableGroupById(core, target)) !== undefined
+		) {
+			throw new Error(GROUP_ON_WAIT_REFUSAL);
+		}
+		return {
+			kind: "agent",
+			agentId: await resolveToUuid(this.http.apiUrl, target),
+		};
 	}
 
 	/**
@@ -616,9 +663,19 @@ export class MessagesResource {
 	 * 🔴 It no longer decides WHICH of the two a recipient is, and that is the
 	 * point of the record: the two verbs that build a body decide by different
 	 * rules, and a shared classifier here handed both of them whichever rule it
-	 * happened to hold. A group UUID no longer reaches this method as a group at
-	 * all — `resolveRecipient` answers it in the agent namespace, exactly as the
-	 * old `normalizeHandle`/`isGroupHandle` pair did.
+	 * happened to hold. A group UUID reaches this method as a GROUP — the id
+	 * rung inside `resolveRecipient` reads the group namespace first, so a UUID
+	 * naming a group this org may read arrives here as `kind: "group"` carrying
+	 * the row that rung fetched, and only a miss there falls through to the agent
+	 * namespace.
+	 *
+	 * ⚠️ **The `group` arm has exactly one caller: {@link MessagesResource.send}.**
+	 * {@link MessagesResource.syncSendTarget} reads the same UUID against the same
+	 * group namespace and REFUSES it rather than addressing it, because
+	 * `POST /messages/sync` is 1:1 — so `sendAndWait` reaches this method only
+	 * with `kind: "agent"`. Two verbs, one reading of a string, two different
+	 * things done with the answer; the record holds that asymmetry and it is not
+	 * a case to unify.
 	 */
 	private async buildSendBody(
 		core: CoreHttpClient,
@@ -913,6 +970,45 @@ export class MessagesResource {
 interface OpScope {
 	readonly signal: AbortSignal;
 	readonly clear: () => void;
+}
+
+/**
+ * Say so when the ID a caller sent to turned out to name a GROUP.
+ *
+ * 🔴 **The no-silent-acceptance rule, on this surface's own channel.** The id
+ * rung reads the group namespace before the agent one, so a UUID copied out of
+ * the wrong column no longer 404s — it seals for a group and reaches every
+ * member ORG of it. That is the one substitution `resolveRecipient` makes which
+ * the caller cannot have intended: an id names a namespace by accident, and
+ * there is no agent of that UUID for it to have meant.
+ *
+ * 🔴 The id class ALONE. Every other spelling a group answers to — the sigil,
+ * the short sigil, the bare name the collision guard already refuses when it is
+ * also an agent's — is a caller choosing the group namespace, and a notice there
+ * would ride every ordinary group send. `handleCompletionNote` covers the
+ * separate case of a spelling completed within one namespace.
+ *
+ * `console.warn`, for {@link MessagesResource.resolveSenderId}'s reason and on
+ * the same channel: the audience for "you addressed X, Y received it" is
+ * whoever wired the client, and `send` answers with the server's own
+ * `MessageRead` — there is no result slot of ours to hang a key on the way
+ * `@rine-network/mcp` can. The SENTENCE is this surface's own and is
+ * deliberately not hoisted into `@rine-network/core`
+ * (`rine-cli/src/commands/messages.ts::groupIdRecipientNote` records why), and
+ * it quotes the caller's spelling and the resolved handle, nothing else.
+ */
+function warnGroupIdRecipient(recipient: RecipientTarget): void {
+	if (recipient.kind !== "group") return;
+	if (classifyReference(recipient.spelling) !== REF_CLASS.id) return;
+	// `handle` is optional on the record because the JOIN ladder's directory
+	// rung answers with an id and no row; every rung `resolveRecipient` uses
+	// carries one. Silence beats printing `undefined` in the slot the caller is
+	// meant to read back.
+	const { handle, spelling } = recipient;
+	if (handle === undefined) return;
+	console.warn(
+		`rine: '${spelling}' is a group ID, so this was addressed to the group '${handle}' and not to an agent.`,
+	);
 }
 
 function idempotencyHeader(

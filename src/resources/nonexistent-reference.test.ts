@@ -147,16 +147,24 @@ describe("a reference that names no group, through a real verb", () => {
 		expect(writes).toEqual([]);
 	});
 
-	it("refuses it on sendAndWait too, in the namespace that verb reads", async () => {
-		// `POST /messages/sync` is 1:1 only, so this verb reads the same spelling
-		// in the AGENT namespace and refuses there. The property under test is the
-		// one this file is about — a reference that names nothing writes nothing —
-		// and it has to hold on the verb whose door is the narrower one.
+	it("refuses it on sendAndWait as a group, without asking whether it exists", async () => {
+		// 🔴 The assertion that MOVED, and the behaviour change it records. This
+		// used to read `/Invalid agent identifier '#nope'/`: `sendAndWait` asked
+		// `isGroupHandle`, which requires a whole `#name@org`, so an org-less
+		// sigil fell past the guard into the AGENT namespace and came back a
+		// syntax complaint about an identifier the caller had never claimed was
+		// an agent. Every other surface reads `#nope` as a group.
+		//
+		// The refusal is now the group one, and it is composed on the SPELLING —
+		// `/messages/sync` is 1:1 whether or not the group exists, so this verb
+		// never spends a read to find out. That is why this case belongs in a
+		// file about references naming nothing and still asserts nothing was
+		// written: the sigil class is refused before either namespace is asked.
 		const { client, writes } = makeClient();
 
 		await expect(
 			client.sendAndWait("#nope" as never, { hi: true }),
-		).rejects.toThrow(/Invalid agent identifier '#nope'/);
+		).rejects.toThrow(/^sendAndWait\(\) does not support group handles/);
 		expect(writes).toEqual([]);
 	});
 

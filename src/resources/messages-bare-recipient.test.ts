@@ -15,6 +15,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { RineApiError } from "@rine-network/core";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 const SENDER_ID = randomUUID();
@@ -106,6 +107,15 @@ function makeClient(agents: unknown[]): {
 			// regression to two fetches fails loudly instead of quietly reading a
 			// second, differently-populated list.
 			if (path === "/agents") throw new Error("second GET /agents");
+			// `/groups/{id}` is the id rung's own route, and it answers for one
+			// row only: the org's group. Anything else is the 404 that
+			// `readableGroupById` reads as a miss. Answering it with the list body
+			// below instead would be a server naming a row nobody asked about,
+			// which that function refuses rather than resolves.
+			if (path.startsWith("/groups/")) {
+				if (path === `/groups/${GROUP_ID}`) return GROUP_ROW;
+				throw new RineApiError(404, "Group not found");
+			}
 			return { items: [GROUP_ROW] };
 		},
 	});
@@ -118,6 +128,24 @@ function makeClient(agents: unknown[]): {
 	);
 
 	return { client, bodies, paths };
+}
+
+/**
+ * Everything this SDK writes to the operator log while the returned handle is
+ * open, as whole lines.
+ *
+ * Restored by the caller rather than in `afterEach`: the suite's teardown
+ * CLEARS mocks and does not restore them, so a `console.warn` spy left standing
+ * would silence a later test that expects to see one.
+ */
+function captureWarnings(): { lines: string[]; restore: () => void } {
+	const lines: string[] = [];
+	const spy = vi
+		.spyOn(console, "warn")
+		.mockImplementation((...parts: unknown[]) => {
+			lines.push(parts.map(String).join(" "));
+		});
+	return { lines, restore: () => spy.mockRestore() };
 }
 
 afterEach(() => {
@@ -151,21 +179,94 @@ describe("send() with a bare recipient", () => {
 		).rejects.toThrow(/qp@acme\.rine\.network/);
 	});
 
-	it("leaves every spelling the agent namespace still accepts alone", async () => {
-		// The predicate is the exact complement of the one `resolveToUuid`
-		// refuses on. A handle and a UUID are both spellings it can still
-		// resolve, so neither may reach the group ladder — widening this is how
-		// a routing change turns into a misdelivery on an E2EE product. What
-		// pins that here is `paths`: not one `/groups` read on either spelling.
+	it("leaves a handle alone — not one group read on the way to the agent", async () => {
+		// 🔴 The bare-name rule, and the reason this assertion is `[]` and not "no group
+		// send": a handle is a spelling `resolveToUuid` can still resolve, so it
+		// must never reach the group ladder at all. Widening this is how a
+		// routing change turns into a misdelivery on an E2EE product.
+		const { client, bodies, paths } = makeClient([]);
+		await client.send("bot@acme.rine.network" as never, { hi: true });
+		expect(bodies[0]?.to_agent_id).toBe(BOT_ID);
+		expect(paths).toEqual([]);
+	});
+
+	it("asks the group namespace for a UUID, and falls through when it misses", async () => {
+		// The id rung splits the UUID off the rule above: an ID names an entity rather
+		// than a namespace, so it costs exactly one org-scoped group read, and a
+		// miss hands the spelling back to the agent arm unchanged. The handle
+		// case keeps `paths === []`; this one pins the single read, so a
+		// regression that stopped asking and a regression that asked twice both
+		// go red.
 		const recipientId = randomUUID();
-		for (const [spelling, resolved] of [
-			["bot@acme.rine.network", BOT_ID],
-			[recipientId, recipientId],
-		] as const) {
-			const { client, bodies, paths } = makeClient([]);
-			await client.send(spelling as never, { hi: true });
-			expect(bodies[0]?.to_agent_id).toBe(resolved);
-			expect(paths).toEqual([]);
+		const { client, bodies, paths } = makeClient([]);
+		await client.send(recipientId as never, { hi: true });
+		expect(bodies[0]?.to_agent_id).toBe(recipientId);
+		expect(paths).toEqual([`/groups/${recipientId}`]);
+	});
+
+	it("sends to the group when the UUID is one this org can read", async () => {
+		const { client, bodies, paths } = makeClient([]);
+		await client.send(GROUP_ID as never, { hi: true });
+		expect(bodies[0]?.to_handle).toBe(GROUP_ROW.handle);
+		expect(bodies[0]?.to_agent_id).toBeUndefined();
+		expect(paths).toContain(`/groups/${GROUP_ID}`);
+	});
+
+	// 🔴 No silent acceptance. The send above is the ONE substitution the ladder
+	// makes that its caller cannot have intended — no agent holds that id, so the
+	// message is sealed for a group and read by every org seated in it — and this
+	// surface's channel for saying so is the operator log `resolveSenderId`
+	// already warns on. Asserted on the BYTES, not on the call: a notice that
+	// named a third handle or an `@org` slot would be a placeholder in a sentence
+	// about a real send.
+	it("warns that the ID named a group, quoting the spelling and the handle", async () => {
+		const { client } = makeClient([]);
+		const warned = captureWarnings();
+		try {
+			await client.send(GROUP_ID as never, { hi: true });
+		} finally {
+			warned.restore();
 		}
+
+		expect(warned.lines).toHaveLength(1);
+		expect(warned.lines[0]).toContain(`'${GROUP_ID}'`);
+		expect(warned.lines[0]).toContain(`'${GROUP_ROW.handle}'`);
+	});
+
+	// The other half of the rule, and why the notice asks the reference CLASS
+	// rather than comparing the two strings alone: a group named by its own
+	// spelling is a caller choosing the group namespace, and both of these
+	// resolve to a handle that differs from what was typed. A notice on them
+	// would ride every ordinary group send.
+	it.each(["quarterly planning", "#quarterly-planning-401"])(
+		"says nothing when the group was named as a group (%s)",
+		async (spelling) => {
+			const { client, bodies } = makeClient([]);
+			const warned = captureWarnings();
+			try {
+				await client.send(spelling as never, { hi: true });
+			} finally {
+				warned.restore();
+			}
+
+			expect(bodies[0]?.to_handle).toBe(GROUP_ROW.handle);
+			expect(warned.lines).toEqual([]);
+		},
+	);
+
+	// And the miss: an ID that names no group of this org is an agent send, so
+	// there is no substitution to report.
+	it("says nothing when the UUID falls through to the agent namespace", async () => {
+		const recipientId = randomUUID();
+		const { client, bodies } = makeClient([]);
+		const warned = captureWarnings();
+		try {
+			await client.send(recipientId as never, { hi: true });
+		} finally {
+			warned.restore();
+		}
+
+		expect(bodies[0]?.to_agent_id).toBe(recipientId);
+		expect(warned.lines).toEqual([]);
 	});
 });
