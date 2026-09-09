@@ -479,6 +479,53 @@ describe("ConversationScope.thread()", () => {
 		expect(mockedDecrypt).not.toHaveBeenCalled();
 	});
 
+	it("test_render_when_it_has_many_rows_then_they_decrypt_one_at_a_time", async () => {
+		// The render decrypts row by row, and this is the only thing that says so.
+		// Every row of a group render opens against one ratchet in one state file,
+		// and a concurrent map over the rows is what returned a mostly-sealed
+		// transcript on the first read and a readable one on the second. The core's
+		// state file now carries its own lock, which is why the sequencing needs a
+		// gate rather than a comment: a parallel render is no longer WRONG, so
+		// restoring the fan-out leaves every other test in both stacks green.
+		const rows = [0, 1, 2, 3].map((i) =>
+			row({
+				type: "rine.v1.task_response",
+				direction: "received",
+				from_agent_id: PEER_ID,
+				to_agent_id: SELF_ID,
+				encrypted_payload: `CT-${i}`,
+			}),
+		);
+		const { client } = makeClient(rows);
+
+		const answer = mockedDecrypt.getMockImplementation();
+		if (!answer) throw new Error("the decrypt mock must have an implementation");
+		let inFlight = 0;
+		let peak = 0;
+		try {
+			mockedDecrypt.mockImplementation(async (opts) => {
+				inFlight++;
+				peak = Math.max(peak, inFlight);
+				// One immediate round drains the microtask queue, so every row a
+				// concurrent render would already have started is counted before this
+				// one returns. Counted rounds, not a wall-clock timer.
+				await new Promise((r) => setImmediate(r));
+				inFlight--;
+				return answer(opts);
+			});
+
+			const out = await client.conversation(CONV_ID).thread();
+
+			expect(out).toHaveLength(4);
+		} finally {
+			// `vi.clearAllMocks()` clears calls, not implementations, so the shared
+			// module mock has to be handed back or every later test inherits this.
+			mockedDecrypt.mockImplementation(answer);
+		}
+		expect(mockedDecrypt).toHaveBeenCalledTimes(4);
+		expect(peak).toBe(1);
+	});
+
 	it("passes each row's own sender through as the expected sender", async () => {
 		const rows = [
 			row({

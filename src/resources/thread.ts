@@ -121,9 +121,20 @@ export async function fetchThread(
 	// directly (`truncated` is currently informational and not surfaced).
 	const page = ConversationMessagesPageSchema.parse(raw);
 
-	const classified = await Promise.all(
-		page.messages.map((row) => toThreadEntry({ core, http, agentId, row })),
-	);
+	// 🔴 One row at a time, deliberately. Every row of a group render opens
+	// against one ratchet in one state file, so a concurrent map made one
+	// key-recovery scan PER ROW and then let them overwrite each other's key
+	// material: most of a transcript came back sealed on the first render after
+	// being away and readable on the second. A row costs a local AEAD open AND
+	// the inbound verify's `GET /agents/{id}/keys`, which is cache-served only
+	// for a sender already fetched inside the client's TTL — so this is not free,
+	// and the claim is correctness, not speed. What does get cheaper is the
+	// recovery: one scan for the whole render instead of one per row. The Python
+	// client has always rendered this way.
+	const classified: Awaited<ReturnType<typeof toThreadEntry>>[] = [];
+	for (const row of page.messages) {
+		classified.push(await toThreadEntry({ core, http, agentId, row }));
+	}
 	// One call to `thread()` is one render, so the explainer is created, spent
 	// and dropped here — never at module scope, where the second transcript of a
 	// process would silently lose the explanation the first one used up.

@@ -237,9 +237,15 @@ export class MessagesResource {
 			});
 			const page = parseCursorPage(DecryptedMessageSchema, raw);
 
-			const items = await Promise.all(
-				page.items.map((item) =>
-					decryptEnvelope({
+			// 🔴 One item at a time. A page holding several posts from one group
+			// decrypts them all against one ratchet in one state file, so a
+			// concurrent map let each row's recovery overwrite the others' key
+			// material and most of the page came back undecryptable on the first
+			// read and fine on the second.
+			const items: Awaited<ReturnType<typeof decryptEnvelope>>[] = [];
+			for (const item of page.items) {
+				items.push(
+					await decryptEnvelope({
 						core,
 						configDir: this.http.configDir,
 						agentId,
@@ -251,8 +257,8 @@ export class MessagesResource {
 						retrySenderKey: true,
 						memo: this.http.decryptMemo,
 					}),
-				),
-			);
+				);
+			}
 
 			return new CursorPage<DecryptedMessage>(
 				items,

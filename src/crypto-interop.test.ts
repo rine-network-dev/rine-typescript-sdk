@@ -398,6 +398,11 @@ describe("crypto interop — PQ hybrid DM round-trip", () => {
 describe("crypto interop — group round-trip", () => {
   it("SDK decrypts a sender-key envelope produced by rine-core encryptGroupMessage", async () => {
     const state = generateSenderKey(GROUP_ID, SENDER_ID);
+    // The sender's own copy, which `encryptGroupMessage` advances in place. A
+    // stand-in sender needs it as much as a real one does: the tail refuses a
+    // state that is on no disk at all rather than discarding the advance. In
+    // production `getOrCreateSenderKey` has already written it.
+    saveSenderKeyState(configDir, SENDER_ID, GROUP_ID, [state]);
     primeRecipientWithSenderState(configDir, RECIPIENT_ID, GROUP_ID, state);
 
     const payload = { announcement: "meeting at 3pm", attendees: 4 };
@@ -434,6 +439,7 @@ describe("crypto interop — group round-trip", () => {
     // their own envelope without having kept the pre-sealed state. The SDK's
     // orchestration must not interfere with that cache.
     const initialState = generateSenderKey(GROUP_ID, SENDER_ID);
+    saveSenderKeyState(configDir, SENDER_ID, GROUP_ID, [initialState]);
     const payload = { self: "read" };
 
     const { result: encrypted } = await encryptGroupMessage(
@@ -484,6 +490,7 @@ describe("crypto interop — repeat group decrypt", () => {
     payload: unknown,
   ): Promise<ParsedDecryptedMessage> {
     const state = generateSenderKey(GROUP_ID, SENDER_ID);
+    saveSenderKeyState(configDir, SENDER_ID, GROUP_ID, [state]);
     primeRecipientWithSenderState(configDir, RECIPIENT_ID, GROUP_ID, state);
     const { result } = await encryptGroupMessage(
       configDir,
@@ -810,6 +817,7 @@ describe("crypto interop — verification status matrix", () => {
     // is suppressed because the recipient's ratchet state was not advanced
     // and the derived key was zeroed.
     const state = generateSenderKey(GROUP_ID, SENDER_ID);
+    saveSenderKeyState(configDir, SENDER_ID, GROUP_ID, [state]);
     primeRecipientWithSenderState(configDir, RECIPIENT_ID, GROUP_ID, state);
 
     const payload = { sensitive: "data" };
@@ -890,6 +898,7 @@ describe("crypto interop — verification status matrix", () => {
 
   it("sender-mismatch path (group): a re-sealed turn is refused and the ratchet stands still", async () => {
     const state = generateSenderKey(GROUP_ID, SENDER_ID);
+    saveSenderKeyState(configDir, SENDER_ID, GROUP_ID, [state]);
     primeRecipientWithSenderState(configDir, RECIPIENT_ID, GROUP_ID, state);
     const before = loadSenderKeyStates(configDir, RECIPIENT_ID, GROUP_ID);
 
@@ -1032,6 +1041,7 @@ describe("crypto interop — AbortError propagation", () => {
     // must propagate as a rejection, NOT be caught and turned into a
     // `decrypt_error` field on a resolved message.
     const state = generateSenderKey(GROUP_ID, SENDER_ID);
+    saveSenderKeyState(configDir, SENDER_ID, GROUP_ID, [state]);
     const { result: encrypted } = await encryptGroupMessage(
       configDir,
       SENDER_ID,
@@ -1079,6 +1089,7 @@ describe("crypto interop — sender-key retry", () => {
     // ingested, populates the recipient's store and lets the second
     // attempt succeed.
     const state = generateSenderKey(GROUP_ID, SENDER_ID);
+    saveSenderKeyState(configDir, SENDER_ID, GROUP_ID, [state]);
     const payload = { retry: "ok" };
     const { result: encrypted } = await encryptGroupMessage(
       configDir,
@@ -1134,6 +1145,7 @@ describe("crypto interop — sender-key retry", () => {
     // (false). `inbox()` uses the default path because per-item retries
     // would fan out into a storm — only `read()` opts into retry.
     const state = generateSenderKey(GROUP_ID, SENDER_ID);
+    saveSenderKeyState(configDir, SENDER_ID, GROUP_ID, [state]);
     const payload = { retry: "off" };
     const { result: encrypted } = await encryptGroupMessage(
       configDir,
