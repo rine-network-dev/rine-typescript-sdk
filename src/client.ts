@@ -176,6 +176,22 @@ export interface ReadOptions<T = unknown> {
 	agent?: string;
 	signal?: AbortSignal;
 	/**
+	 * Read without consuming the message — it stays new, and stays offered by
+	 * `inbox({ status: "new" })`, {@link AsyncRineClient.poll} and SSE catch-up.
+	 *
+	 * A plain read marks the message delivered **whether or not it decrypts**:
+	 * the server holds no key and stamps the mark before the client has tried,
+	 * and there is no un-mark route — so a row this agent cannot open yet is
+	 * offered exactly once and then only fetchable by id. This is what an
+	 * unattended loop wants for that row. The acting agent is still named and
+	 * still refused if it names nobody: only the mark is suppressed.
+	 *
+	 * Riding on `X-Rine-Peek`, honoured by the server from the release this
+	 * option ships with. An older deployment ignores the header and consumes
+	 * the row as it always did.
+	 */
+	peek?: boolean;
+	/**
 	 * Standard Schema v1 — JSON-parses `plaintext` and validates it after
 	 * decrypt. On success the returned `DecryptedMessage<T>.plaintext` is
 	 * typed as `T | null`. On failure throws `ValidationError` (the

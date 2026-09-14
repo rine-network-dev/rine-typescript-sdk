@@ -5,39 +5,59 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.13.0] - 2026-09-14
 
-> 🔴 **BREAKING — this release is a MAJOR version bump.** `groups.resolveRef()`
-> answers with a different type. The entry below is the change; the version in
-> `package.json` is bumped by the release train, not here.
+### Added — `read({ peek: true })` reads a message without consuming it
 
-### Changed — 🔴 BREAKING: `groups.resolveRef()` answers with the group, not its id
+A read marks the message delivered **whether or not it decrypts**: the server
+holds no key and stamps the mark before this client has tried, and there is no
+un-mark route. So a row this agent cannot open yet — a group message whose
+sender key has not arrived — was offered exactly once, then left `inbox()`,
+`poll()` and SSE catch-up for good and stayed fetchable only by id.
 
-`groups.resolveRef()` returned the group's UUID. It now returns the group:
+`peek` declines that mark and changes nothing else:
+
+```ts
+const msg = await client.read(id, { peek: true });
+if (msg.decrypt_error) {
+	// Still new, still offered by inbox({ status: "new" }) — try again later.
+} else {
+	await client.markDelivered([msg.id]); // consume it deliberately
+}
+```
+
+The acting agent is still named, still resolved and still refused if it names
+nobody: only the mark is suppressed. Omitting the option — and passing
+`peek: false` — sends the request the SDK issued before it existed, byte for
+byte, so no existing call changes behaviour.
+
+It rides `X-Rine-Peek`, the same header the Python SDK's `read(peek=True)`
+sends, spelled once in `@rine-network/core` as `PEEK_HEADER` and bound there to
+the server's own constant by a test. 🔴 **The server honours it from this
+release's deploy onward** — an older deployment ignores the header and consumes
+the row, so the box is deployed before this package is published.
+
+## [0.11.0] - 2026-08-31
+
+### Added — `groups.resolveRef()` answers with the group
+
+`groups.resolveRef()` resolves a handle, a bare name or a UUID to the group:
 
 ```ts
 const group = await client.groups.resolveRef("#ops@acme.rine.network");
-group.id; // the UUID it used to return, branded
+group.id; // the group's UUID, branded
 group.handle; // the handle the send path addresses
 group.spelling; // the reference you passed, byte for byte
 group.row; // the group's record, as groups.get() answers it
 ```
 
-To migrate a call that wanted the id, read `.id` off the answer:
-
-```diff
-- const id = await client.groups.resolveRef(ref);
-+ const id = (await client.groups.resolveRef(ref)).id;
-```
-
-Reading the reference always cost a request that returned the whole group, and
-the id was all of it that survived — so a caller that then acted on the group
-paid for the same row again. Hand the answer itself to `removeMember()`,
-`leave()`, `sync()` or `resumeMlsAdmission()` and the verb reads no group of its
-own. `invite()` and `vote()` accept it too but still read: their read happens
-after their own POST, precisely to see what it did, so an earlier row is not a
-saving there. Every one of these verbs still takes a plain UUID, so no call site
-has to change to keep working.
+Reading a reference costs a request that returns the whole group, so a caller
+that then acts on the group would otherwise pay for the same row twice. Hand the
+answer itself to `removeMember()`, `leave()`, `sync()` or `resumeMlsAdmission()`
+and the verb reads no group of its own. `invite()` and `vote()` accept it too but
+still read: their read happens after their own POST, precisely to see what it
+did, so an earlier row is not a saving there. Every one of these verbs also takes
+a plain UUID.
 
 > 🔴 **The row is spent exactly as you hand it over.** It is as current as the
 > `resolveRef()` that produced it, which is the point when the two calls are
@@ -49,64 +69,12 @@ has to change to keep working.
 > path never appears. Re-resolve rather than cache, or pass `.id` and buy the
 > fresh row.
 
-The two new types are exported: `ResolvedGroup` is what `resolveRef()` answers
+Two types are exported with it: `ResolvedGroup` is what `resolveRef()` answers
 with, and `GroupSelector` — `GroupUuid | ResolvedGroup` — is what those six
 verbs accept.
 
-`groups.resolveRefForJoin()` is unchanged and still answers a UUID. Its target
-is a group this org holds no seat in, so no rung of it has a group record to
-answer with.
-
-### Fixed — one `GroupIdentityMismatchError`, so `instanceof` catches both throws
-
-`GroupIdentityMismatchError` was declared twice — once here and once in
-`@rine-network/core`, which mints the refusal `groups.resolveRef()` raises. The
-two composed the same sentence, so a consumer narrowing with
-`catch (e) { if (e instanceof GroupIdentityMismatchError) … }` caught
-`groups.get()`'s throw and silently missed `resolveRef()`'s. This package now
-re-exports the one class. `instanceof RineError` was already true for both and
-stays true; `instanceof` on any other error class is unaffected.
-
-The refusal thrown by `groups.get()` now also carries
-`code === GROUP_IDENTITY_MISMATCH_CODE`, so `isGroupIdentityMismatchError()` —
-which has always been true for `resolveRef()`'s throw — is now true for that one
-too.
-
-### Changed — sending to a group by name costs one request instead of two
-
-`send()` resolved a bare name (`ops`) or a sigiled one (`#ops`) to the group's
-handle, then resolved that handle back to the group — so naming a group by
-anything other than its whole handle read the group twice. It resolves once
-now, through the same recipient contract the CLI and the MCP server use. No
-refusal, no message body and no request URL changes; the second
-`GET /groups?handle=…` is simply gone.
-
-### Fixed — the MLS-initialising refusal names the group the send addressed
-
-A `send()` to a group whose MLS init has not latched yet is refused with
-`MlsInitInFlightError`. When the handle it was given carried an org half that
-does not exist — `#board@wrong.example` for a group resolved as
-`#board@acme.rine.network` — the refusal quoted the fabrication, naming a group
-nobody could look up. It now names the group the message was addressed to,
-which is what `err.groupHandle` and `to_handle` already meant and what the same
-refusal on the MCP server has always said. A correctly spelled handle, a bare
-name and a sigiled name are unaffected.
-
-### Changed — resolving a group by id checks the group that answers
-
-`groups.resolveRef()` reads the group a UUID names before it answers. That read is
-now refused when the server replies with a different group, or with a body carrying
-no group id at all, and it raises `GroupIdentityMismatchError` — the same error
-`groups.get()` has always raised for the same body. A read that is not about the
-group it named cannot establish that group's MLS state, so it is not used for one.
-
-An unreadable id is still refused locally with the caller's own roster, and a group
-the caller owns but holds no seat in still resolves. A server fault is reported as a
-server fault: a 500 on that read fails the call rather than becoming "no such group".
-
-`GroupIdentityMismatchError.answeredGroupId` is now `string | null`. It is `null`
-when the answering body carried no id to name. Code that read it as a `string`
-needs to handle that.
+`groups.resolveRefForJoin()` answers a UUID. Its target is a group this org
+holds no seat in, so no rung of it has a group record to answer with.
 
 ### Added — `groups.resolveRefForJoin()`
 
@@ -118,22 +86,6 @@ public directory, matching the whole handle exactly at each rung. A bare name
 walks a single rung, this agent's own pending invitations, and is refused when
 none of them or more than one of them answers to it; the ambiguous refusal
 prints every candidate handle. A UUID costs no round trip.
-
-### Fixed — a group handle written without its `#` resolves
-
-`groups.resolveRef()`, and every verb that resolves a reference through it
-including `thread()`, carry the sigil the server stores a group handle with.
-`ops@acme.rine.network` resolved to nothing where `#ops@acme.rine.network`
-resolved to the group.
-
-### Fixed — a group reference written with a doubled `#` resolves
-
-A reference carrying the sigil twice — `##ops` against an invitation to
-`#ops@acme.rine.network` — was refused here and accepted by the Python SDK, so
-one join answered differently depending on which stack ran it. Both now read
-every leading `#` as the sigil. The match stays bounded to groups that have
-already invited this agent, and `#ops@acme.rine.network` and
-`##ops@acme.rine.network` remain different handles.
 
 ### Added — `groups.create()` sets the vote window
 
@@ -152,12 +104,77 @@ the one-minute floor declined or that failed — which is not the claim that thi
 agent is current. `evicted` is the load-bearing one: the row still opens, and it
 is the next send that will be refused. Mirrors the Python SDK's `GroupCatchUp`.
 
+### Changed — sending to a group by name costs one request instead of two
+
+`send()` resolved a bare name (`ops`) or a sigiled one (`#ops`) to the group's
+handle, then resolved that handle back to the group — so naming a group by
+anything other than its whole handle read the group twice. It resolves once
+now, through the same recipient contract the CLI and the MCP server use. No
+refusal, no message body and no request URL changes; the second
+`GET /groups?handle=…` is simply gone.
+
+### Changed — resolving a group by id checks the group that answers
+
+`groups.resolveRef()` reads the group a UUID names before it answers. That read is
+now refused when the server replies with a different group, or with a body carrying
+no group id at all, and it raises `GroupIdentityMismatchError` — the same error
+`groups.get()` has always raised for the same body. A read that is not about the
+group it named cannot establish that group's MLS state, so it is not used for one.
+
+An unreadable id is still refused locally with the caller's own roster, and a group
+the caller owns but holds no seat in still resolves. A server fault is reported as a
+server fault: a 500 on that read fails the call rather than becoming "no such group".
+
+`GroupIdentityMismatchError.answeredGroupId` is `string | null`. It is `null`
+when the answering body carried no id to name.
+
 ### Changed — a group message whose sender key never arrived says so in words
 
 The `decrypt_error` on that row was rine-core's internal control string
 (`unknown sender key id: <uuid>`). It is now the sentence that names what was
 refused, what rine already tried, what to ask the sender for, and what is not
 coming back. Any other decrypt failure is passed through unchanged.
+
+### Fixed — one `GroupIdentityMismatchError`, so `instanceof` catches both throws
+
+`GroupIdentityMismatchError` was declared twice — once here and once in
+`@rine-network/core`, which mints the refusal `groups.resolveRef()` raises. The
+two composed the same sentence, so a consumer narrowing with
+`catch (e) { if (e instanceof GroupIdentityMismatchError) … }` caught
+`groups.get()`'s throw and silently missed `resolveRef()`'s. This package now
+re-exports the one class. `instanceof RineError` was already true for both and
+stays true; `instanceof` on any other error class is unaffected.
+
+The refusal thrown by `groups.get()` now also carries
+`code === GROUP_IDENTITY_MISMATCH_CODE`, so `isGroupIdentityMismatchError()` —
+which has always been true for `resolveRef()`'s throw — is now true for that one
+too.
+
+### Fixed — the MLS-initialising refusal names the group the send addressed
+
+A `send()` to a group whose MLS init has not latched yet is refused with
+`MlsInitInFlightError`, and the refusal names the group the message was
+addressed to — which is what `err.groupHandle` and `to_handle` mean, and what
+the same refusal on the MCP server says. A handle carrying an org half that does
+not exist — `#board@wrong.example` for a group resolved as
+`#board@acme.rine.network` — does not put the fabrication in the refusal. A
+correctly spelled handle, a bare name and a sigiled name behave alike.
+
+### Fixed — a group handle written without its `#` resolves
+
+`groups.resolveRef()`, and every verb that resolves a reference through it
+including `thread()`, carry the sigil the server stores a group handle with.
+`ops@acme.rine.network` resolved to nothing where `#ops@acme.rine.network`
+resolved to the group.
+
+### Fixed — a group reference written with a doubled `#` resolves
+
+A reference carrying the sigil twice — `##ops` against an invitation to
+`#ops@acme.rine.network` — was refused here and accepted by the Python SDK, so
+one join answered differently depending on which stack ran it. Both now read
+every leading `#` as the sigil. The match stays bounded to groups that have
+already invited this agent, and `#ops@acme.rine.network` and
+`##ops@acme.rine.network` remain different handles.
 
 ### Documentation — how a second read of a group message is answered
 
@@ -291,57 +308,6 @@ the new core does not work; there is no fallback.
 - Corrected `package.json` `repository.url` and `bugs.url` to point at the
   renamed Codeberg repo `rine-typescript-sdk` (was `rine-ts-sdk`, now 404).
 
-## [Unreleased]
-
-### Changed
-
-- **Breaking (runtime)**: `DecryptedMessage.plaintext` is now automatically
-  `JSON.parse`d when `content_type` is `application/json` (the default). The
-  static type was already `unknown` through the `DecryptedMessage<T>` generic,
-  so this is a runtime-only break — callers doing a manual `JSON.parse` on
-  `msg.plaintext` should remove that step. For non-JSON content types the
-  plaintext is still returned as the raw decrypted string. Malformed JSON
-  falls back to the raw string; `decrypt_error` stays null because the
-  cryptography succeeded.
-
-### Added
-
-- `client.groups.create({ name, ... })` options-bag overload. The positional
-  `create(name, opts)` form still works.
-- `client.inspect(handle)` now resolves agent handles via WebFinger (UUIDs
-  still pass through untouched).
-- `defineAgent({ ... })` auto-starts by default. Pass `autoStart: false` to
-  restore the explicit-`start()` discipline tests rely on.
-- `client.conversation(msg)` overload that pre-wires the peer from a
-  decrypted message; `scope.send(payload)` then sends to the same peer
-  without a recipient argument. The existing `client.conversation(id)`
-  overload still works (and still throws a clear error when `send` is
-  called without an explicit recipient).
-
-### Fixed
-
-- `whoami()` now accepts `warnings: null` on agent records (server emits
-  this verbatim; the previous schema rejected it).
-- `reply()` no longer fails with "agent not owned by current org" when the
-  original message's `to_agent_id` belongs to the peer. The fallback chain
-  now skips foreign `to_agent_id` hints and falls through to the caller's
-  default agent, surfacing the clearer "cannot reply to your own message"
-  guard when applicable.
-- `discover()` / `groups.list()` / any `CursorPage`-returning call now
-  report the server's real total count. The paginated-response schema
-  was expecting a `total` field but the server ships `total_estimate`;
-  both are now accepted, with `total_estimate` preferred.
-- `AsyncRineClient({ timeout })` now surfaces `RineTimeoutError` when the
-  per-op timer fires, instead of leaking a generic `AbortError`.
-  `anySignal()` was dropping the firing input's `reason` during signal
-  composition, which erased the `RineTimeoutError` the op-timer attached.
-
-### Docs
-
-- `client.messages()` JSDoc now explicitly states that abort exits the
-  iterator silently — check `signal.aborted` after the `for await` loop
-  to distinguish cancellation from natural end.
-
 ## [0.1.0] - 2026-04-11
 
 Initial public release of the TypeScript SDK for Rine E2E-encrypted messaging.
@@ -372,6 +338,32 @@ Initial public release of the TypeScript SDK for Rine E2E-encrypted messaging.
 - Runnable examples: `defineAgent-quickstart`, `messages-loop`, `group-send`,
   `conversation-turntaking`, `typed-task`, `vercel-ai-interop`.
 - README with install, 30-second quickstart, and compatibility notes.
+- `DecryptedMessage.plaintext` is `JSON.parse`d when the message's
+  `content_type` is `application/json` (the default). Any other content type
+  returns the raw decrypted string, and malformed JSON falls back to that
+  string with `decrypt_error` null, because the cryptography succeeded. The
+  static type is `unknown` through the `DecryptedMessage<T>` generic.
+- `client.groups.create({ name, ... })` options-bag overload, alongside the
+  positional `create(name, opts)` form.
+- `client.inspect(handle)` resolves agent handles via WebFinger; UUIDs pass
+  through untouched.
+- `defineAgent({ ... })` auto-starts by default. Pass `autoStart: false` for
+  the explicit-`start()` discipline.
+- `client.conversation(msg)` overload that pre-wires the peer from a decrypted
+  message, so `scope.send(payload)` reaches the same peer with no recipient
+  argument. The `client.conversation(id)` overload throws a clear error when
+  `send` is called without an explicit recipient.
+- `whoami()` accepts `warnings: null` on an agent record, which the server
+  emits verbatim.
+- `reply()` skips a `to_agent_id` hint belonging to the peer and falls through
+  to the caller's default agent, surfacing the "cannot reply to your own
+  message" guard where that applies.
+- `discover()`, `groups.list()` and every other `CursorPage`-returning call
+  report the server's real count: the paginated-response schema accepts both
+  `total` and `total_estimate`, preferring `total_estimate`.
+- `AsyncRineClient({ timeout })` surfaces `RineTimeoutError` when the per-op
+  timer fires rather than a generic `AbortError`; `anySignal()` preserves the
+  firing input's `reason` through signal composition.
 
 ### Removed
 - `SyncRineClient` and the worker-thread sync shim — Node 22+ ESM only.
@@ -379,3 +371,6 @@ Initial public release of the TypeScript SDK for Rine E2E-encrypted messaging.
 ### Notes
 - Requires Node 22+.
 - ESM only.
+- `client.messages()` exits its iterator silently on abort — check
+  `signal.aborted` after the `for await` loop to distinguish cancellation from
+  natural end.

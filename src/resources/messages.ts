@@ -30,6 +30,7 @@ import {
 	resolveRecipient,
 	resolveToUuid,
 	syncMlsGroup,
+	withPeekHeader,
 } from "@rine-network/core";
 import { actingAgentHeader } from "../api/acting-agent.js";
 import { GroupReadSchema, parse, parseCursorPage } from "../api/adapters.js";
@@ -328,6 +329,12 @@ export class MessagesResource {
 	 * It is plaintext at rest and widens what a stolen config dir yields;
 	 * a replay is re-verified against the sender the server names on THIS read,
 	 * never served on the strength of the first one. There is no off switch.
+	 *
+	 * **This read marks the message delivered whether or not it decrypts** — the
+	 * server holds no key and stamps the mark before this client has tried — and
+	 * there is no un-mark route, so the row leaves `inbox({ status: "new" })`,
+	 * `poll()` and SSE catch-up and stays fetchable only by id. `opts.peek`
+	 * declines that mark: everything else about the read is unchanged.
 	 */
 	async read(messageId: MessageUuid, opts: ReadOptions = {}) {
 		const op = this.beginOp(opts.signal);
@@ -342,9 +349,19 @@ export class MessagesResource {
 				// raw `opts.agent` is neither — it is absent whenever the id came
 				// from the SDK default, and may be a bare name the header does not
 				// accept.
+				//
+				// A peek suppresses the mark and NOTHING else, the acting agent
+				// included: the row is still read as this agent, with this agent's
+				// keys, and a client that names nobody in a multi-agent org is
+				// still refused. Peek changes what the read does, never who it is
+				// as. Absent is today's behaviour exactly, which is why the key is
+				// omitted rather than sent as a false spelling.
 				signal: op.signal,
 				operation: "read",
-				extraHeaders: { [ACTING_AGENT_HEADER]: agentId },
+				extraHeaders: withPeekHeader(
+					{ [ACTING_AGENT_HEADER]: agentId },
+					opts.peek,
+				),
 			});
 			const msg = parse(DecryptedMessageSchema, raw);
 
