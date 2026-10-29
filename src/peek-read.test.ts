@@ -60,7 +60,7 @@ function messageRow(): Record<string, unknown> {
 		to_agent_id: OPS_ID,
 		type: "rine.v1.task_request",
 		encrypted_payload: "ENC(DM)",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		created_at: "2026-04-11T12:00:00Z",
 		metadata: {},
 	};

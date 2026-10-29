@@ -15,6 +15,15 @@
 
 export { register, validateSlug } from "./onboard.js";
 export type { RegisterOptions, RegistrationResult } from "./onboard.js";
+export {
+	agentNameFromOrgName,
+	runOnboardFlow,
+	stdoutOnboardIO,
+} from "./onboard-runner.js";
+export type { OnboardIO, OnboardOptions } from "./onboard-runner.js";
+export { onboardUsage, parseOnboardArgs } from "./onboard-args.js";
+export type { OnboardConnector } from "./onboard-args.js";
+export { runOnboardCli } from "./onboard-cli.js";
 
 // ---------------------------------------------------------------------------
 // Client
@@ -48,7 +57,6 @@ export type {
 } from "./agent.js";
 
 export type {
-	AddPostQuantumKeyOptions,
 	CreateAgentOptions,
 	CreateAgentResult,
 	VerifyIdentityOptions,
@@ -235,6 +243,8 @@ export {
 	RineApiError,
 	AuthenticationError,
 	AuthorizationError,
+	PrincipalRevokedError,
+	RevokedScope,
 	NotFoundError,
 	ConflictError,
 	RateLimitError,
@@ -274,15 +284,25 @@ export {
 // widening `errors-core-refusals.ts` holds. The predicate stays exported for
 // the consumer who would rather branch on a stable code than on a class.
 export {
+	AGENT_ID_MISMATCH_CODE,
+	AgentIdMismatchError,
 	DOWNGRADE_REFUSED_CODE,
+	ESCROW_GAP_CODE,
+	EscrowGapError,
 	GROUP_IDENTITY_MISMATCH_CODE,
 	MLS_INIT_IN_FLIGHT_CODE,
 	MLS_PENDING_SELF_CLEAR_SECONDS,
 	MlsDowngradeError,
 	MlsInitInFlightError,
+	ORG_MISMATCH_CODE,
+	OrgMismatchError,
+	isAgentIdMismatchError,
+	isEscrowGapError,
 	isGroupIdentityMismatchError,
 	isMlsDowngradeError,
 	isMlsInitInFlightError,
+	isOrgMismatchError,
+	isPrincipalRevokedError,
 } from "@rine-network/core";
 
 // How a join request is decided, in the one sentence every rine surface
@@ -295,8 +315,19 @@ export {
 // server does not implement.
 export { VOTE_ELECTORATE_RULE, inviteNominates } from "@rine-network/core";
 
+// The clause a request row carries for the reading agent's own standing, one
+// per `you_may_vote_reason`. Re-exported for the same reason as the rule above:
+// a wrapper that keeps its own copy of the table drifts from the CLI and the
+// Python twin the day a clause is reworded. Each surface passes only what it
+// prints where the server's answer leaves a gap.
+export {
+	VOTE_ELIGIBILITY_CLAUSES,
+	type VoteEligibilityFallbacks,
+	describeVoteEligibility,
+} from "@rine-network/core";
+
 // The two sentences a group refusal carries its own answer in. `matchGroupByName`
-// lists the org's groups inline when a reference resolves to none of them, and
+// lists the groups the key can see inline when a reference resolves to none of them, and
 // `NO_GROUPS_IN_ORG` is the arm for an org that holds a seat nowhere.
 //
 // Re-exported because a wrapper surface has to branch on them to know when NOT
@@ -306,6 +337,11 @@ export { VOTE_ELECTORATE_RULE, inviteNominates } from "@rine-network/core";
 // never retyped — a wrapper that restates the sentence goes silently stale the
 // day this one is reworded, and its own suite reads green either way.
 export { GROUP_ROSTER_LEAD, NO_GROUPS_IN_ORG } from "@rine-network/core";
+
+// The notice a group-reading surface carries so a caller learns that the org's
+// readers can read the group. Re-exported so an SDK-only consumer building its own
+// tool descriptions imports the sentence rather than retyping it.
+export { GROUP_READERS_NOTICE } from "@rine-network/core";
 
 // The vocabulary of the one decrypt failure that has something for the reader
 // to do about it, and the render policy that keeps it from becoming noise.
@@ -376,6 +412,8 @@ export {
 	// packages that consume this SDK came to re-derive three of them locally
 	// with `z.infer<>`. Same class as `MlsRecoveryResult`.
 	type WhoAmI,
+	type WhoAmIPrincipal,
+	WhoAmIPrincipalKind,
 	type GroupRead,
 	type GroupMember,
 	type GroupSummary,

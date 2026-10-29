@@ -18,15 +18,6 @@ vi.mock("@rine-network/core", async () => {
 		);
 	return {
 		...actual,
-		loadCredentials: vi.fn(() => ({
-			default: {
-				org_id: "stub",
-				agent_handle: "stub@stub",
-				agent_id: "stub",
-				signing_key: "stub",
-				encryption_key: "stub",
-			},
-		})),
 		getOrRefreshToken: vi.fn(async () => "stub-token"),
 	};
 });
@@ -300,7 +291,7 @@ describe("SDKHttpClient middleware integration", () => {
 			apiUrl: "https://api.test",
 			middleware: [mw],
 		});
-		// Unauthenticated path avoids the loadCredentials file read.
+		// Unauthenticated path avoids the token fetch.
 		await http.get("/poll", { unauthenticated: true, operation: "poll" });
 		expect(seen).toHaveLength(1);
 		expect(seen[0]?.method).toBe("GET");

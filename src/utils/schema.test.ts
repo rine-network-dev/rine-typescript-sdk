@@ -154,7 +154,7 @@ function makeMsg(plaintext: string | null | undefined): DecryptedMessage {
 		conversation_id: "00000000-0000-0000-0000-000000000002",
 		type: "rine.v1.task_request",
 		encrypted_payload: "ciphertext",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		metadata: {},
 		created_at: "2026-04-11T00:00:00.000Z",
 		verified: true,

@@ -45,10 +45,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 			{ id: SENDER_ID, handle: "me@acme.rine.network" },
 		]),
 		resolveAgent: vi.fn(async () => ({ agentId: SENDER_ID })),
-		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
-		encryptMessage: vi.fn(async () => ({
+		sealForAgent: vi.fn(async () => ({
 			encrypted_payload: "DM-CIPHERTEXT",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 			sender_signing_kid: `rine:${SENDER_ID}`,
 		})),
 		assertNoMlsDowngrade: vi.fn(),

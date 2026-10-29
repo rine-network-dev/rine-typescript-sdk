@@ -3,13 +3,15 @@
  * `messages.sendAndWait()`, and `client.messages()`.
  *
  * Dispatch is driven by `encryption_version`:
- *   - `hpke-v1`        → `decryptMessage` (1:1, recipient's X25519 private key).
+ *   - `hpke-hybrid-v2` → `decryptMessage` (1:1, recipient's X25519 + ML-KEM-768 keys).
  *   - `sender-key-v1`  → `decryptGroupMessage` (version byte 0x02). On a
  *                        dispatch failure, optionally retries once after
  *                        `fetchAndIngestPendingSKDistributions`.
  *   - `mls-v1`         → `decryptGroupMessage` (version byte 0x04; auto-routed
  *                        inside core). On failure, optionally retries once
  *                        after `processMlsWelcomes`.
+ *   - `none` on an `rine.v1.a2a_message` → the posted parts, unverifiable and
+ *                        marked `a2a_cleartext` (never sealed, never verified).
  *   - anything else    → returned as-is with `decrypt_error` populated.
  *
  * Every decrypt is bound to the row's `from_agent_id` — the sender the server
@@ -50,22 +52,30 @@ import {
 	type HttpClient as CoreHttpClient,
 	type DecryptResult,
 	ACTING_AGENT_HEADER,
+	ENCRYPTION_VERSIONS,
+	ENCRYPTION_VERSION_HYBRID_V2,
 	GroupAuthenticityError,
-	agentIdFromKid,
 	asSenderKeyUnavailable,
 	decryptGroupMessage,
 	decryptMessage,
 	fetchAndIngestPendingSKDistributions,
+	isA2aCleartext,
+	isGroupEncryptionVersion,
 	isMlsWelcomeRefusedError,
 	isRefusedDecrypt,
+	isUnopenableGroupRead,
+	mlsReadRefusal,
+	parseSigningKid,
 	processMlsWelcomes,
 	sameAgentId,
+	sdkSyncRemedy,
 	senderKeyNotRecoveredMessage,
 	syncMlsGroup,
 	unknownSenderKeyId,
 } from "@rine-network/core";
 import type { DecryptedMessage } from "../types.js";
 import { asReplay, type GroupDecryptMemo } from "../utils/decrypt-memo.js";
+import { openA2aCleartext } from "./a2a-cleartext-row.js";
 
 /**
  * Looser input shape accepted by `decryptEnvelope` and its helpers.
@@ -100,6 +110,12 @@ export interface DecryptEnvelopeOptions {
 	readonly msg: ParsedDecryptedMessage;
 	readonly retrySenderKey?: boolean;
 	/**
+	 * The recipient the envelope's signature is scoped to, when that is not the
+	 * reader: the self-sealed copy of a SENT 1:1 row is signed for the peer it was
+	 * sent to, so the sender re-opening it names that peer here.
+	 */
+	readonly scopeAgentId?: string;
+	/**
 	 * Per-client memo of successful group decrypts. Supplied by every SDK
 	 * receive surface so a row seen twice (inbox re-poll, read-after-inbox,
 	 * thread over a group conversation) still yields plaintext — the group
@@ -111,11 +127,26 @@ export interface DecryptEnvelopeOptions {
 export async function decryptEnvelope(
 	opts: DecryptEnvelopeOptions,
 ): Promise<DecryptedMessage> {
-	const { core, configDir, agentId, msg, memo, retrySenderKey = false } = opts;
+	const {
+		core,
+		configDir,
+		agentId,
+		msg,
+		memo,
+		retrySenderKey = false,
+		scopeAgentId,
+	} = opts;
 
 	const encryptedPayload = msg.encrypted_payload;
 	if (!encryptedPayload) {
 		return applyDecryptError(msg, "missing encrypted_payload");
+	}
+
+	// Cleartext A2A has no envelope: nothing was sealed and no signature exists to
+	// check against the sender, so it is opened before the sender check that guards
+	// every sealed row. It is returned unverifiable and marked, never as authenticated.
+	if (isA2aCleartext(msg)) {
+		return openA2aCleartext(msg);
 	}
 
 	// The envelope is never accepted as its own witness: without the server's
@@ -127,16 +158,15 @@ export async function decryptEnvelope(
 	}
 
 	try {
-		if (
-			msg.encryption_version === "hpke-v1" ||
-			msg.encryption_version === "hpke-hybrid-v1"
-		) {
+		if (msg.encryption_version === ENCRYPTION_VERSION_HYBRID_V2) {
 			const result = await decryptMessage(
 				configDir,
 				agentId,
 				encryptedPayload,
 				core,
 				fromAgentId,
+				scopeAgentId,
+				msg.created_at,
 			);
 			// A 1:1 authenticity failure is refused in the same shape a group one is:
 			// the decrypt withholds the text, and the row comes back closed, carrying
@@ -157,8 +187,8 @@ export async function decryptEnvelope(
 		// (`msg.group_id`) is the only state key. Only the retry recovery
 		// differs: sender-key ingests pending distributions, MLS installs
 		// pending Welcomes.
-		const isMls = msg.encryption_version === "mls-v1";
-		if (msg.encryption_version === "sender-key-v1" || isMls) {
+		if (isGroupEncryptionVersion(msg.encryption_version)) {
+			const isMls = msg.encryption_version === ENCRYPTION_VERSIONS.MLS_V1;
 			if (!msg.group_id) {
 				return applyDecryptError(msg, "sender-key message missing group_id");
 			}
@@ -189,6 +219,7 @@ export async function decryptEnvelope(
 					encryptedPayload,
 					core,
 					fromAgentId,
+					msg.created_at,
 				);
 			} catch (firstErr) {
 				rethrowIfAbort(firstErr);
@@ -216,7 +247,7 @@ export async function decryptEnvelope(
 					return applyDecryptError(
 						msg,
 						missingId === null
-							? errMessage(firstErr)
+							? groupReadMessage(firstErr, msg.group_id)
 							: senderKeyNotRecoveredMessage(missingId),
 						classifyGroupError(firstErr),
 					);
@@ -266,6 +297,7 @@ export async function decryptEnvelope(
 						encryptedPayload,
 						core,
 						fromAgentId,
+						msg.created_at,
 					);
 				} catch (retryErr) {
 					rethrowIfAbort(retryErr);
@@ -296,7 +328,7 @@ export async function decryptEnvelope(
 					const unavailable = asSenderKeyUnavailable(retryErr, msg.group_id);
 					return applyDecryptError(
 						msg,
-						unavailable?.message ?? errMessage(retryErr),
+						unavailable?.message ?? groupReadMessage(retryErr, msg.group_id),
 						classifyGroupError(retryErr),
 						unavailable?.code,
 					);
@@ -459,7 +491,7 @@ function authenticityReason(
  */
 function signedByRowSender(senderKid: string, fromAgentId: string): boolean {
 	try {
-		return sameAgentId(agentIdFromKid(senderKid), fromAgentId);
+		return sameAgentId(parseSigningKid(senderKid).agentId, fromAgentId);
 	} catch {
 		return false;
 	}
@@ -479,4 +511,16 @@ function rethrowIfAbort(err: unknown): void {
 function errMessage(err: unknown): string {
 	if (err instanceof Error) return err.message;
 	return String(err);
+}
+
+/**
+ * A failed group read, in rine's words when no key this agent holds opens the
+ * message (a seat with no leaf, or an epoch sealed before it) and as the error
+ * says it otherwise. The same split the CLI and the Python SDK make, so the
+ * crypto library's own text never reaches a row.
+ */
+function groupReadMessage(err: unknown, groupId: string): string {
+	return isUnopenableGroupRead(err)
+		? mlsReadRefusal(groupId, sdkSyncRemedy(groupId))
+		: errMessage(err);
 }

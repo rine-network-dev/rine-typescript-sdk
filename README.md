@@ -57,7 +57,7 @@ That's a complete receive → decrypt → process → reply loop. The SSE layer 
 
 ## Core concepts
 
-**End-to-end encryption.** Every outbound message is encrypted client-side: HPKE for DMs (`hpke-v1`, or `hpke-hybrid-v1` to a peer that publishes a PQ key), post-quantum MLS for groups (`mls-v1`). `groups.create()` enables MLS by default and requires a `visibility`; pass `{ enableMls: false }` for a sender-key group (`sender-key-v1`), whose bodies are classical. Open-enrollment groups are always sender-key groups — the server does not allow MLS there — so they are classical whatever `enableMls` says. Members on the Python SDK, the CLI and MCP all read and post MLS groups. The server stores opaque ciphertext and routes envelopes; it cannot read plaintext. The SDK delegates crypto entirely to [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) — the same code path the CLI and MCP server use. You never touch keys unless you want to rotate them via `client.rotateKeys()`.
+**End-to-end encryption.** Every outbound message is encrypted client-side: post-quantum hybrid HPKE for DMs (`hpke-hybrid-v2`: X25519 plus ML-KEM-768), post-quantum MLS for groups (`mls-v1`). `groups.create()` enables MLS by default and requires a `visibility`; pass `{ enableMls: false }` for a sender-key group (`sender-key-v1`), whose bodies are classical. Open-enrollment groups are always sender-key groups — the server does not allow MLS there — so they are classical whatever `enableMls` says. Members on the Python SDK, the CLI and MCP all read and post MLS groups. The server stores opaque ciphertext and routes envelopes; it cannot read plaintext. The SDK delegates crypto entirely to [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) — the same code path the CLI and MCP server use. You never touch keys unless you want to rotate them via `client.rotateKeys()`.
 
 **`defineAgent`.** The actor-style loop. Either a type-routed `handlers` dict (recommended — SSE-layer filter skips unmatched types before decrypt) or a single `onMessage` catch-all — never both. Lifecycle is `start()` / `stop()` / `await using agent = defineAgent(...)`. Handler throws are caught and routed to `onError({ stage: 'handler' })`; the loop keeps running.
 
@@ -79,7 +79,7 @@ const result = await client.payments.pay(quote, { awaitReceipt: true });
 console.log(result.payment.id);   // the sent rine.v1.x402_payment
 ```
 
-`pay` selects a requirement under the spend policy, signs the EIP-3009 authorization, reserves the spend, and replies in the same thread. It throws an `X402Error` when the policy refuses the quote. The payee side — `client.payments.quote()` / `fulfill(payment, { facilitator })` — issues quotes and verifies, settles, and receipts payments. The facilitator HTTP client (`FACILITATOR_PRESET`, `verifyPayment`, `settlePayment`) is single-sourced in [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) and re-exported here; verify/settle is plain external HTTP, never a rine endpoint.
+`pay` selects a requirement under the spend policy, signs the EIP-3009 authorization, reserves the spend, and replies in the same thread. It throws an `X402Error` when the policy refuses the quote, or when the quote's sender is not `verified` (`inauthentic-sender`, or the retryable `sender-unverifiable` when the sender's key could not be read). The payee side — `client.payments.quote()` / `fulfill(payment, { facilitator })` — issues quotes and verifies, settles, and receipts payments. The facilitator HTTP client (`FACILITATOR_PRESET`, `verifyPayment`, `settlePayment`) is single-sourced in [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) and re-exported here; verify/settle is plain external HTTP, never a rine endpoint.
 
 ## Examples
 
@@ -101,7 +101,7 @@ Runnable examples live in [`examples/`](https://codeberg.org/rine/rine-typescrip
 
 ```ts
 // Client
-new AsyncRineClient({ configDir?, apiUrl?, agent?, timeout?, signal?, middleware? })
+new AsyncRineClient({ configDir?, ownerDir?, agentOnly?, profile?, apiUrl?, agent?, timeout?, signal?, middleware? })
 
 // Messaging
 client.send<T>(to, payload, { type?, schema?, idempotencyKey?, ... })

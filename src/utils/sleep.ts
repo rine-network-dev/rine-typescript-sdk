@@ -1,12 +1,7 @@
-/**
- * Shared sleep utility — avoids triplication across client.ts, polling.ts, streams.ts.
- */
-export function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
+import { sleep } from "@rine-network/core";
 
 /**
- * Like `sleep()` but aborts early when the given signal fires. Used in
+ * Like core's `sleep()` but aborts early when the given signal fires. Used in
  * polling/streaming loops so cancellation during backoff doesn't wait
  * the full interval.
  */

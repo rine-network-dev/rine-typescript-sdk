@@ -21,6 +21,7 @@
  * `./errors-core-refusals.js` holds that mechanism and the reasoning behind it.
  */
 
+import type { RevokedScope } from "@rine-network/core";
 import { isRineErrorInstance } from "./errors-core-refusals.js";
 
 // ---------------------------------------------------------------------------
@@ -83,6 +84,26 @@ export class AuthenticationError extends RineApiError {
 	constructor(detail = "Authentication failed", raw?: unknown) {
 		super(401, detail, raw);
 		this.name = "AuthenticationError";
+	}
+}
+
+/**
+ * 401 — the server refused the caller because its agent or its branch is revoked.
+ *
+ * Retrying cannot help and the credentials are not at fault: the principal itself
+ * was revoked. The server names the scope on a bearer route (always) and on the
+ * token mint (only once the key assertion verified, so the answer never reveals a
+ * revocation to a stranger). An `AuthenticationError`, so a caller already
+ * catching a refused login still catches it.
+ */
+export class PrincipalRevokedError extends AuthenticationError {
+	constructor(
+		public readonly scope: RevokedScope,
+		detail = "The principal is revoked",
+		raw?: unknown,
+	) {
+		super(detail, raw);
+		this.name = "PrincipalRevokedError";
 	}
 }
 
@@ -234,4 +255,4 @@ export class ReplyAttributionError extends RineError {
  * what `dist/index.d.ts` carries), so keeping a third copy only creates one
  * more place for it to go stale.
  */
-export { GroupIdentityMismatchError } from "@rine-network/core";
+export { GroupIdentityMismatchError, RevokedScope } from "@rine-network/core";

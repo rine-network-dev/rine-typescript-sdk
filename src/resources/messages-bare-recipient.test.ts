@@ -40,10 +40,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 			...ORG_AGENTS,
 		]),
 		resolveAgent: vi.fn(async () => ({ agentId: SENDER_ID })),
-		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
-		encryptMessage: vi.fn(async () => ({
+		sealForAgent: vi.fn(async () => ({
 			encrypted_payload: "DM-CIPHERTEXT",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 			sender_signing_kid: `rine:${SENDER_ID}`,
 		})),
 		assertNoMlsDowngrade: vi.fn(),
@@ -192,7 +191,7 @@ describe("send() with a bare recipient", () => {
 
 	it("asks the group namespace for a UUID, and falls through when it misses", async () => {
 		// The id rung splits the UUID off the rule above: an ID names an entity rather
-		// than a namespace, so it costs exactly one org-scoped group read, and a
+		// than a namespace, so it costs exactly one credential-scoped group read, and a
 		// miss hands the spelling back to the agent arm unchanged. The handle
 		// case keeps `paths === []`; this one pins the single read, so a
 		// regression that stopped asking and a regression that asked twice both

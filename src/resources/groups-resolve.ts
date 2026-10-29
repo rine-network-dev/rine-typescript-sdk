@@ -112,7 +112,8 @@ export function selectGroup(target: GroupSelector): {
  * Resolve any group reference — handle, bare name, or UUID — to the group.
  *
  * A UUID costs one indexed `GET /groups/{id}` and no more — the group's own
- * row, served to the org that owns the group as well as to one seated in it.
+ * row, served to an org key for a group its org owns as well as one seated in,
+ * and to an agent or branch key only for a group with a seat in its scope.
  * An id this caller may not read is refused with the roster of the groups they
  * do have, and that second read is the only one a refused id costs.
  *
@@ -153,11 +154,11 @@ export async function resolveGroupRef(
  * Resolve a group reference for `join`, the one verb aimed OUTSIDE the org.
  *
  * 🔴 A separate ladder on purpose, not a widening of {@link resolveGroupRef}.
- * Every rung that one takes is scoped to a group this org already owns or is
- * seated in — for every other group verb the right scope, and for a join the
+ * Every rung that one takes is scoped to a group this key already
+ * reads — for every other group verb the right scope, and for a join the
  * one set the target cannot be in. `resolveGroupUuidForJoin` (`rine-core`) adds
- * the two rungs that can see a group you are not in, this agent's invitations
- * and the public directory, and reads a bare name against those invitations
+ * the three rungs that can see a group you are not in, this agent's invitations,
+ * your org's open or voted groups and the public directory, and reads a bare name against those invitations
  * alone: the rungs, the bounds and every refusal live there, with the reasons.
  *
  * @throws {TypeError} The reference resolved to something that is not a UUID.

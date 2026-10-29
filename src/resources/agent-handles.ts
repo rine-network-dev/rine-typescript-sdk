@@ -50,7 +50,7 @@ export function agentHandleMap(agents: readonly AgentRead[]): AgentHandleMap {
 /**
  * One `GET /agents` per client lifetime, shared with every derived client.
  *
- * The list is org-scoped, and `withOptions` derives a client that shares this
+ * The list is key-scoped, and `withOptions` derives a client that shares this
  * one's credentials — so `withAgent()` per tool call (what `rine-mastra` does
  * on every execute) must not mean a fetch per tool call. The founder accepted
  * the new call deliberately; what was accepted is one, not one per render.

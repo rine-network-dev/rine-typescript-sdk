@@ -35,20 +35,21 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 			{ id: OUR_AGENT_ID, handle: "me@acme.rine.network" },
 		]),
 		resolveAgent: vi.fn(async () => ({ agentId: OUR_AGENT_ID })),
-		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
 		normalizeHandle: vi.fn((h: string) => h),
 		// Quote-ref resolution (ref load + self-decrypt + payee-issued proof)
 		// lives in rine-core and is unit-tested there; the SDK only needs to wire
 		// its result through, so we control the seam here.
 		resolvePayeeRequirement: vi.fn(),
-		encryptMessage: vi.fn(async (_c, _s, _k, payload: unknown) => {
-			capturedEncryptPayload = payload;
-			return {
-				encrypted_payload: "CIPHERTEXT",
-				encryption_version: "hpke-v1",
-				sender_signing_kid: `rine:${OUR_AGENT_ID}`,
-			};
-		}),
+		sealForAgent: vi.fn(
+			async (_c, _d, _p, payload: unknown) => {
+				capturedEncryptPayload = payload;
+				return {
+					encrypted_payload: "CIPHERTEXT",
+					encryption_version: "hpke-hybrid-v2",
+					sender_signing_kid: `rine:${OUR_AGENT_ID}#0`,
+				};
+			},
+		),
 	};
 });
 
@@ -124,6 +125,7 @@ function quoteMessage(pr = paymentRequired()) {
 		content_type: "application/json",
 		plaintext: pr,
 		metadata: {},
+		verification_status: "verified",
 		decrypt_error: null,
 	} as unknown as import("../types.js").DecryptedMessage;
 }
@@ -135,7 +137,7 @@ const REPLY_RESPONSE = {
 	to_agent_id: PAYEE_ID,
 	type: "rine.v1.x402_payment",
 	encrypted_payload: "CIPHERTEXT",
-	encryption_version: "hpke-v1",
+	encryption_version: "hpke-hybrid-v2",
 	created_at: "2026-07-17T00:00:00.000Z",
 	metadata: {},
 };
@@ -175,7 +177,7 @@ function makeClient(originalFor: ReturnType<typeof quoteMessage>) {
 					to_agent_id: OUR_AGENT_ID,
 					type: originalFor.type,
 					encrypted_payload: "CIPHERTEXT",
-					encryption_version: "hpke-v1",
+					encryption_version: "hpke-hybrid-v2",
 					created_at: "2026-07-17T00:00:00.000Z",
 					metadata: {},
 				};
@@ -235,6 +237,51 @@ describe("PaymentsResource payer", () => {
 		// Spend was recorded (0.10 EURC = 100000 canonical micro-units).
 		expect(core.readDailySpent(tmp, OUR_AGENT_ID)).toBe(100000n);
 	});
+
+	it.each([
+		["unverifiable", X402_ERROR.SENDER_UNVERIFIABLE],
+		["invalid", X402_ERROR.INAUTHENTIC_SENDER],
+		["sender-mismatch", X402_ERROR.INAUTHENTIC_SENDER],
+	] as const)(
+		"test_pay_when_quote_sender_is_%s_refuses_and_sends_nothing",
+		async (status, code) => {
+			core.savePolicy(tmp, OUR_AGENT_ID, HAPPY_POLICY);
+			const quote = {
+				...quoteMessage(),
+				verification_status: status,
+			} as ReturnType<typeof quoteMessage>;
+			const client = makeClient(quote);
+
+			await expect(client.payments.pay(quote)).rejects.toMatchObject({ code });
+
+			expect(posts).toHaveLength(0);
+			expect(core.readDailySpent(tmp, OUR_AGENT_ID)).toBe(0n);
+		},
+	);
+
+	it.each([
+		["failed to decrypt", { decrypt_error: "AEAD failure" }],
+		["is cleartext A2A", { a2a_cleartext: true }],
+		["has no authenticated sender", { from_agent_id: null }],
+	] as const)(
+		"test_pay_when_unverifiable_quote_%s_refuses_as_inauthentic_and_sends_nothing",
+		async (_name, extra) => {
+			core.savePolicy(tmp, OUR_AGENT_ID, HAPPY_POLICY);
+			const quote = {
+				...quoteMessage(),
+				verification_status: "unverifiable",
+				...extra,
+			} as unknown as ReturnType<typeof quoteMessage>;
+			const client = makeClient(quote);
+
+			await expect(client.payments.pay(quote)).rejects.toMatchObject({
+				code: X402_ERROR.INAUTHENTIC_SENDER,
+			});
+
+			expect(posts).toHaveLength(0);
+			expect(core.readDailySpent(tmp, OUR_AGENT_ID)).toBe(0n);
+		},
+	);
 
 	it("test_pay_stamps_answered_quote_ref_into_signed_payload", async () => {
 		core.savePolicy(tmp, OUR_AGENT_ID, HAPPY_POLICY);
@@ -349,6 +396,7 @@ describe("PaymentsResource payee", () => {
 				extensions: { [X402_QUOTE_REF_KEY]: "quote-abc" },
 			},
 			metadata: {},
+			verification_status: "verified",
 			decrypt_error: null,
 		} as unknown as import("../types.js").DecryptedMessage;
 	}
@@ -611,16 +659,90 @@ describe("PaymentsResource payee", () => {
 		expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
 	});
 
+	it.each(["invalid", "sender-mismatch"] as const)(
+		"test_fulfill_when_payment_sender_is_%s_refuses_without_settling",
+		async (status) => {
+			const fetchMock = stubFacilitator();
+			const payment = {
+				...paymentMessage(),
+				verification_status: status,
+			} as ReturnType<typeof paymentMessage>;
+			const client = makeClient(payment);
+
+			const result = await client.payments.fulfill(payment, {
+				facilitator: FACILITATOR_PRESET.payai,
+				expected: payeeRequirement() as never,
+			});
+
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(result.settlement).toBeNull();
+			expect(result.verification.invalidReason).toBe(
+				X402_ERROR.INAUTHENTIC_SENDER,
+			);
+			expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
+		},
+	);
+
+	it("test_fulfill_when_payment_sender_is_unverifiable_throws_without_receipt_or_settling", async () => {
+		const fetchMock = stubFacilitator();
+		const payment = {
+			...paymentMessage(),
+			verification_status: "unverifiable",
+		} as ReturnType<typeof paymentMessage>;
+		const client = makeClient(payment);
+
+		await expect(
+			client.payments.fulfill(payment, {
+				facilitator: FACILITATOR_PRESET.payai,
+				expected: payeeRequirement() as never,
+			}),
+		).rejects.toMatchObject({ code: X402_ERROR.SENDER_UNVERIFIABLE });
+
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(posts).toHaveLength(0);
+	});
+
+	it.each([
+		["failed to decrypt", { decrypt_error: "AEAD failure" }],
+		["is cleartext A2A", { a2a_cleartext: true }],
+		["has no authenticated sender", { from_agent_id: null }],
+	] as const)(
+		"test_fulfill_when_unverifiable_payment_%s_threads_terminal_receipt_without_settling",
+		async (_name, extra) => {
+			const fetchMock = stubFacilitator();
+			const payment = {
+				...paymentMessage(),
+				verification_status: "unverifiable",
+				...extra,
+			} as unknown as ReturnType<typeof paymentMessage>;
+			const client = makeClient(payment);
+
+			const result = await client.payments.fulfill(payment, {
+				facilitator: FACILITATOR_PRESET.payai,
+				expected: payeeRequirement() as never,
+			});
+
+			expect(fetchMock).not.toHaveBeenCalled();
+			expect(result.settlement).toBeNull();
+			expect(result.verification.invalidReason).toBe(
+				X402_ERROR.INAUTHENTIC_SENDER,
+			);
+			expect(markerStatus(posts[0]?.body)).toBe("payment-failed");
+		},
+	);
+
 	it("test_fulfill_refuses_malformed_payload_with_typed_failure", async () => {
 		const fetchMock = stubFacilitator();
 		// A structurally malformed payment (no `authorization`).
 		const payment = {
 			id: randomUUID(),
 			conversation_id: randomUUID(),
+			from_agent_id: OUR_AGENT_ID,
 			type: "rine.v1.x402_payment",
 			content_type: "application/json",
 			plaintext: { x402Version: 2, payload: {} },
 			metadata: {},
+			verification_status: "verified",
 			decrypt_error: null,
 		} as unknown as import("../types.js").DecryptedMessage;
 		const client = makeClient(payment);

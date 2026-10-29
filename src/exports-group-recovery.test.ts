@@ -45,6 +45,7 @@ const MLS: MlsRecoveryResult = {
 	behind: 5,
 	processed: 5,
 	evicted: false,
+	escrow: { gaps: [], queued: 0, dropped: 0, backlogged: 0 },
 };
 
 /** How a consumer is meant to read the result: on the discriminant, and on

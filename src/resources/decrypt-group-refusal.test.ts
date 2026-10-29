@@ -35,8 +35,11 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 
 const {
 	GroupAuthenticityError,
+	MLS_ERR_GROUP_INACTIVE,
 	SENDER_KEY_UNAVAILABLE_CODE,
 	UNKNOWN_SENDER_KEY_CLAUSE,
+	mlsReadRefusal,
+	sdkSyncRemedy,
 } = await import("@rine-network/core");
 const { decryptEnvelope } = await import("./decrypt.js");
 
@@ -99,6 +102,48 @@ describe("group decrypt refusal under retrySenderKey", () => {
 		expect(decryptGroupMessageMock).toHaveBeenCalledTimes(1);
 		expect(processMlsWelcomesMock).not.toHaveBeenCalled();
 		expect(syncMlsGroupMock).not.toHaveBeenCalled();
+	});
+
+	it("test_mls_read_when_the_epoch_predates_the_readers_leaf_then_the_row_carries_the_typed_refusal", async () => {
+		// The core's KDF error for a message sealed at the epoch an external commit
+		// was built on: no key can open it, so the row says so in rine's words and
+		// not in the crypto library's.
+		const kdf = Object.assign(
+			new Error("the provided length of the key 0 is shorter than the minimum length 32"),
+			{ code: "RINE_MLS_PROTOCOL" },
+		);
+		decryptGroupMessageMock.mockRejectedValue(kdf);
+
+		const result = await decryptEnvelope({
+			core,
+			configDir: "/nonexistent",
+			agentId: AGENT_ID,
+			msg: groupRow("mls-v1"),
+			retrySenderKey: true,
+		});
+
+		expect(result.decrypt_error).toBe(mlsReadRefusal(GROUP_ID, sdkSyncRemedy(GROUP_ID)));
+		expect(result.decrypt_error_code).toBeNull();
+	});
+
+	it("test_mls_read_when_the_group_evicted_the_reader_then_the_row_keeps_the_evictions_own_words", async () => {
+		// No sync undoes a Remove, so the sentence that offers a sync as the way
+		// out would be the wrong remedy for a reader the group has removed.
+		const evicted = Object.assign(new Error("the group no longer includes this agent"), {
+			code: MLS_ERR_GROUP_INACTIVE,
+		});
+		decryptGroupMessageMock.mockRejectedValue(evicted);
+
+		const result = await decryptEnvelope({
+			core,
+			configDir: "/nonexistent",
+			agentId: AGENT_ID,
+			msg: groupRow("mls-v1"),
+			retrySenderKey: true,
+		});
+
+		expect(result.decrypt_error).toBe("the group no longer includes this agent");
+		expect(result.decrypt_error).not.toBe(mlsReadRefusal(GROUP_ID, sdkSyncRemedy(GROUP_ID)));
 	});
 
 	it("test_sender_key_row_when_signature_is_invalid_then_reports_invalid", async () => {

@@ -7,6 +7,12 @@
  * the sender's signing public key during signature verification, because
  * hitting a real dev server would be out of scope for unit tests.
  *
+ * The agents are real derived agents of a custody fixture: `seedAgent` writes
+ * their generation-0 leaf keys under the runtime config dir and `publishedKeys`
+ * is what the server answers for them, so the signature scope ids are canonical
+ * UUIDs and the keys an envelope is sealed to are the keys the derivation tree
+ * really holds.
+ *
  * Four round-trip cases plus three verification paths are covered in-memory:
  *
  *   1. DM SDK→core   — SDK `decryptEnvelope` decrypts an envelope produced
@@ -45,24 +51,19 @@
  *   - Unknown `encryption_version` → `decrypt_error`.
  */
 
-import * as fs from "node:fs";
-import { tmpdir } from "node:os";
-import * as path from "node:path";
 import {
-  type AgentKeys,
+  type AgentKeysResponse,
   type HttpClient as CoreHttpClient,
   type SenderKeyState,
   deleteGroupReadCache,
   encryptGroupMessage,
   encryptMessage,
   fromBase64Url,
-  generateAgentKeys,
   generateSenderKey,
-  loadAgentKeys,
+  jwkToPqPublicKey,
+  jwkToPublicKey,
   loadSenderKeyStates,
-  saveAgentKeys,
   saveSenderKeyState,
-  signingPublicKeyToJWK,
   toBase64Url,
 } from "@rine-network/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -70,6 +71,12 @@ import {
   type ParsedDecryptedMessage,
   decryptEnvelope,
 } from "./resources/decrypt.js";
+import {
+  type CustodyFixture,
+  makeCustodyFixture,
+  publishedKeys,
+  seedAgent,
+} from "@rine-network/core/testing";
 import { GroupDecryptMemo } from "./utils/decrypt-memo.js";
 
 // ---------------------------------------------------------------------------
@@ -84,7 +91,17 @@ const CONV_ID = "e5f6a7b8-c9d0-4234-efab-345678901234";
 /** A peer that re-seals another agent's signed envelope and posts it as its own. */
 const RESEALER_ID = "f6a7b8c9-d0e1-4345-fabc-456789012345";
 
-type KeyStore = Map<string, AgentKeys>;
+/** The recipient key material `encryptMessage` seals to, from the published chain. */
+function recipientKeysFor(agentId: string): {
+  encryption: Uint8Array;
+  pqEncryption: Uint8Array;
+} {
+  const keys = publishedKeys(agentId);
+  return {
+    encryption: jwkToPublicKey(keys.encryption_public_key),
+    pqEncryption: jwkToPqPublicKey(keys.pq_encryption_public_key),
+  };
+}
 
 /**
  * Minimal structural stand-in for rine-core's `HttpClient`. `decryptEnvelope`
@@ -105,29 +122,32 @@ type MockCore = Pick<CoreHttpClient, "get"> & {
 /**
  * Duck-typed rine-core HttpClient stand-in. `verifyEnvelopeSender` only calls
  * `client.get('/agents/{id}/keys')` during decrypt, so a single `get` stub
- * driven by an in-memory keystore is sufficient.
+ * driven by the fixture's published key chain is sufficient.
  *
- * @param knownAgents  map of agentId → AgentKeys used to answer /keys lookups.
- *                     Agents NOT in this map trigger a rejected fetch, which
- *                     rine-core turns into `verification_status: 'unverifiable'`.
+ * @param knownAgents  agent ids the server has keys for. Agents NOT in this set
+ *                     trigger a rejected fetch, which rine-core turns into
+ *                     `verification_status: 'unverifiable'`.
+ * @param publishedSigning  overrides the signing key an agent publishes, so a
+ *                     row can be signed by one key and checked against another
+ *                     — what a recipient sees when the signature does not check
+ *                     out.
  */
-function makeMockCore(knownAgents: KeyStore): MockCore {
+function makeMockCore(
+  knownAgents: ReadonlySet<string> = new Set([SENDER_ID, RECIPIENT_ID]),
+  publishedSigning: ReadonlyMap<
+    string,
+    AgentKeysResponse["signing_public_key"]
+  > = new Map(),
+): MockCore {
   return {
     get: vi.fn(async (p: string) => {
       const match = p.match(/^\/agents\/([^/]+)\/keys$/);
       if (!match) throw new Error(`unexpected path: ${p}`);
       const agentId = match[1] as string;
-      const keys = knownAgents.get(agentId);
-      if (!keys) throw new Error(`unknown agent: ${agentId}`);
-      return {
-        agent_id: agentId,
-        signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-        encryption_public_key: {
-          kty: "OKP",
-          crv: "X25519",
-          x: toBase64Url(keys.encryption.publicKey),
-        },
-      };
+      if (!knownAgents.has(agentId)) throw new Error(`unknown agent: ${agentId}`);
+      const body = publishedKeys(agentId);
+      const signing = publishedSigning.get(agentId);
+      return signing ? { ...body, signing_public_key: signing } : body;
     }),
   };
 }
@@ -165,7 +185,7 @@ function primeRecipientWithSenderState(
  * on the cryptographic result, not the envelope metadata.
  */
 function wireMessage(
-  encryptionVersion: "hpke-v1" | "sender-key-v1" | string,
+  encryptionVersion: string,
   encryptedPayload: string | undefined,
   overrides: Partial<ParsedDecryptedMessage> = {},
 ): ParsedDecryptedMessage {
@@ -184,45 +204,22 @@ function wireMessage(
 }
 
 // ---------------------------------------------------------------------------
-// Test harness — each test gets a fresh tmpdir and fresh keys.
+// Test harness — each test gets a fresh custody fixture with derived keys.
 // ---------------------------------------------------------------------------
 
+let fx: CustodyFixture;
 let configDir: string;
-let senderKeys: AgentKeys;
-let recipientKeys: AgentKeys;
-let store: KeyStore;
 
 beforeEach(() => {
-  configDir = fs.mkdtempSync(path.join(tmpdir(), "rine-interop-"));
-  senderKeys = generateAgentKeys();
-  recipientKeys = generateAgentKeys();
-  saveAgentKeys(configDir, SENDER_ID, senderKeys);
-  saveAgentKeys(configDir, RECIPIENT_ID, recipientKeys);
-  store = new Map<string, AgentKeys>([
-    [SENDER_ID, senderKeys],
-    [RECIPIENT_ID, recipientKeys],
-  ]);
+  fx = makeCustodyFixture();
+  seedAgent(fx, SENDER_ID);
+  seedAgent(fx, RECIPIENT_ID);
+  configDir = fx.dirs.configDir;
 });
 
 afterEach(() => {
-  fs.rmSync(configDir, { recursive: true, force: true });
+  fx.cleanup();
 });
-
-/**
- * Recover the recipient's ML-KEM-768 keypair from disk. `generateAgentKeys()`
- * always mints a PQ key and `saveAgentKeys` persists it, so the hybrid tests
- * reuse the same recipient identity the rest of the file already set up rather
- * than minting a throwaway PQ fixture. The public half drives the hybrid seal;
- * the private half (loaded by `decryptMessage` from `configDir`) drives the
- * open.
- */
-function requireRecipientPq(): { publicKey: Uint8Array } {
-  const loaded = loadAgentKeys(configDir, RECIPIENT_ID);
-  if (!loaded.pqEncryption) {
-    throw new Error("expected recipient PQ key to be present on disk");
-  }
-  return loaded.pqEncryption;
-}
 
 // ---------------------------------------------------------------------------
 // DM round-trip.
@@ -234,15 +231,16 @@ describe("crypto interop — DM round-trip", () => {
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       payload,
     );
 
-    expect(encrypted.encryption_version).toBe("hpke-v1");
-    expect(encrypted.sender_signing_kid).toBe(`rine:${SENDER_ID}`);
+    expect(encrypted.encryption_version).toBe("hpke-hybrid-v2");
+    expect(encrypted.sender_signing_kid).toBe(`rine:${SENDER_ID}#0`);
 
-    const mockCore = makeMockCore(store);
-    const msg = wireMessage("hpke-v1", encrypted.encrypted_payload);
+    const mockCore = makeMockCore();
+    const msg = wireMessage("hpke-hybrid-v2", encrypted.encrypted_payload);
     const result = await decryptEnvelope({
       core: asCore(mockCore),
       configDir,
@@ -259,7 +257,7 @@ describe("crypto interop — DM round-trip", () => {
     // The envelope metadata must pass through unchanged.
     expect(result.id).toBe(MSG_ID);
     expect(result.conversation_id).toBe(CONV_ID);
-    expect(result.encryption_version).toBe("hpke-v1");
+    expect(result.encryption_version).toBe("hpke-hybrid-v2");
   });
 
   it("round-trips Unicode + nested structures without corruption", async () => {
@@ -274,15 +272,16 @@ describe("crypto interop — DM round-trip", () => {
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       payload,
     );
 
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
-      msg: wireMessage("hpke-v1", encrypted.encrypted_payload),
+      msg: wireMessage("hpke-hybrid-v2", encrypted.encrypted_payload),
     });
 
     expect(result.decrypt_error).toBeNull();
@@ -294,98 +293,92 @@ describe("crypto interop — DM round-trip", () => {
 // PQ hybrid DM round-trip.
 //
 // Two audits found 8 bugs in the hybrid read/decrypt path that escaped because
-// no test ever drove an `hpke-hybrid-v1` envelope through `decryptEnvelope`.
-// The headline failure: `decrypt.ts`'s version dispatch only matched
-// `hpke-v1`, so every hybrid envelope fell through to the
-// "unknown encryption_version" branch and came back with
-// `decrypt_error: 'unknown encryption_version: hpke-hybrid-v1'` and NO
-// plaintext. These tests drive a *real* hybrid envelope (produced by
+// no test ever drove an `hpke-hybrid-v2` envelope through `decryptEnvelope`.
+// The headline failure: `decrypt.ts`'s version dispatch only matched a retired
+// version string, so every hybrid envelope fell through to the
+// "unknown encryption_version" branch and came back with a `decrypt_error` and
+// NO plaintext. These tests drive a *real* hybrid envelope (produced by
 // `encryptMessage` with the recipient's ML-KEM-768 public key) through the
 // real `decryptEnvelope` and assert the plaintext is recovered and verified.
 //
-// Reverting the 180be82 fix (dropping `|| msg.encryption_version ===
-// "hpke-hybrid-v1"` on line 67 of decrypt.ts) makes both tests fail:
-// `decrypt_error` becomes non-null and `plaintext` becomes undefined.
+// Dispatching only on a retired version string makes the first test fail:
+// `decrypt_error` becomes the unknown-version string and `plaintext` becomes
+// undefined.
 // ---------------------------------------------------------------------------
 
 describe("crypto interop — PQ hybrid DM round-trip", () => {
-  it("SDK decrypts an hpke-hybrid-v1 envelope and recovers the plaintext", async () => {
-    const recipientPq = requireRecipientPq();
+  it("SDK decrypts an hpke-hybrid-v2 envelope and recovers the plaintext", async () => {
     const payload = { task: "translate", text: "quantum-safe", n: 7 };
 
-    // Hybrid seal: passing the recipient's PQ public key flips
-    // `encryptMessage` into `hpke-hybrid-v1` mode (version byte 0x03).
+    // Hybrid seal: the recipient's PQ public key drives the ML-KEM-768 half of
+    // the `hpke-hybrid-v2` envelope.
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       payload,
-      recipientPq.publicKey,
     );
-    expect(encrypted.encryption_version).toBe("hpke-hybrid-v1");
+    expect(encrypted.encryption_version).toBe("hpke-hybrid-v2");
 
-    const msg = wireMessage("hpke-hybrid-v1", encrypted.encrypted_payload);
+    const msg = wireMessage("hpke-hybrid-v2", encrypted.encrypted_payload);
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
     });
 
-    // Reverting the fix makes `decrypt_error` the unknown-version string and
-    // `plaintext` undefined — both assertions below fail.
+    // Dispatching only on a retired version string makes `decrypt_error` the
+    // unknown-version string and `plaintext` undefined — both assertions below
+    // fail.
     expect(result.decrypt_error).toBeNull();
     expect(result.plaintext).toEqual(payload);
     expect(result.verified).toBe(true);
     expect(result.verification_status).toBe("verified");
-    expect(result.encryption_version).toBe("hpke-hybrid-v1");
+    expect(result.encryption_version).toBe("hpke-hybrid-v2");
   });
 
-  it("dispatches an hpke-hybrid-v1 tag to the crypto open path, not the unknown-version branch", async () => {
+  it("dispatches an hpke-hybrid-v2 tag to the crypto open path, not the unknown-version branch", async () => {
     // This test isolates the dispatch *decision* rather than asserting on a
-    // constant. The pre-fix guard matched ONLY `hpke-v1`, so a
-    // `hpke-hybrid-v1` tag fell through to the unknown-version branch and
-    // came back with `decrypt_error: "unknown encryption_version:
-    // hpke-hybrid-v1"` — `decryptMessage` was never reached.
+    // constant. A guard that matched only a retired version string would send a
+    // `hpke-hybrid-v2` tag to the unknown-version branch and come back with
+    // `decrypt_error: "unknown encryption_version: hpke-hybrid-v2"` —
+    // `decryptMessage` was never reached.
     //
-    // To prove the fixed dispatch genuinely reaches `decryptMessage` and
-    // tries to OPEN the bytes (rather than short-circuiting on the version
-    // string), we feed it a *real classical* HPKE ciphertext — wire version
-    // byte 0x01, so `decryptMessage` takes the classical `open()` arm — but
-    // with one byte of the AEAD body flipped so the open fails. The result
-    // must be a CRYPTO error, never the unknown-version string:
-    //   - pre-fix  → "unknown encryption_version: hpke-hybrid-v1" (dispatch
-    //                 never reached the crypto layer) → assertion FAILS.
-    //   - post-fix → an AEAD/open error from `decryptMessage` → assertion
-    //                 PASSES, proving dispatch landed on the crypto path.
-    const classical = await encryptMessage(
+    // To prove the dispatch genuinely reaches `decryptMessage` and tries to OPEN
+    // the bytes (rather than short-circuiting on the version string), we feed it
+    // a *real* hybrid ciphertext with one byte of the AEAD body flipped so the
+    // open fails. The result must be a CRYPTO error, never the unknown-version
+    // string.
+    const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       { secret: "pq" },
     );
-    expect(classical.encryption_version).toBe("hpke-v1");
+    expect(encrypted.encryption_version).toBe("hpke-hybrid-v2");
 
-    // Flip a byte in the AEAD body (NOT byte 0 — the 0x01 version prefix
-    // must survive so the classical `open()` arm is selected inside
-    // `decryptMessage`). The tag-covered ciphertext then fails to open.
-    const raw = fromBase64Url(classical.encrypted_payload);
+    // Flip a byte in the AEAD body (NOT byte 0 — the version prefix must
+    // survive so the hybrid `open()` arm is selected inside `decryptMessage`).
+    // The tag-covered ciphertext then fails to open.
+    const raw = fromBase64Url(encrypted.encrypted_payload);
     const flipIdx = raw.length - 1;
     raw[flipIdx] = (raw[flipIdx] ?? 0) ^ 0x01;
     const tamperedB64 = toBase64Url(raw);
 
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
-      // Tag it `hpke-hybrid-v1` — the dispatch decision under test.
-      msg: wireMessage("hpke-hybrid-v1", tamperedB64),
+      // Tag it `hpke-hybrid-v2` — the dispatch decision under test.
+      msg: wireMessage("hpke-hybrid-v2", tamperedB64),
     });
 
     // A non-null crypto error means dispatch reached `decryptMessage`.
     expect(result.decrypt_error).not.toBeNull();
-    // Crucially NOT the unknown-version short-circuit — that string is the
-    // pre-fix tell, so this assertion is what fails on a revert.
+    // Crucially NOT the unknown-version short-circuit.
     expect(result.decrypt_error).not.toContain("unknown encryption_version");
     expect(result.plaintext).toBeUndefined();
   });
@@ -420,7 +413,7 @@ describe("crypto interop — group round-trip", () => {
       group_id: GROUP_ID,
     });
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
@@ -454,7 +447,7 @@ describe("crypto interop — group round-trip", () => {
       group_id: GROUP_ID,
     });
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: SENDER_ID,
       msg,
@@ -512,13 +505,13 @@ describe("crypto interop — repeat group decrypt", () => {
     const msg = await groupEnvelope(payload);
 
     const first = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
     });
     const second = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
@@ -538,14 +531,14 @@ describe("crypto interop — repeat group decrypt", () => {
     const msg = await groupEnvelope({ announcement: "once only" });
 
     await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
     });
     deleteGroupReadCache(configDir, RECIPIENT_ID, GROUP_ID);
     const second = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
@@ -563,7 +556,7 @@ describe("crypto interop — repeat group decrypt", () => {
     const memo = new GroupDecryptMemo();
 
     const first = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
@@ -571,7 +564,7 @@ describe("crypto interop — repeat group decrypt", () => {
       memo,
     });
     const second = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
@@ -599,7 +592,7 @@ describe("crypto interop — repeat group decrypt", () => {
     const memo = new GroupDecryptMemo();
 
     await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
@@ -607,7 +600,7 @@ describe("crypto interop — repeat group decrypt", () => {
       memo,
     });
     const second = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg: { ...msg, from_agent_id: SENDER_ID.toUpperCase() },
@@ -632,7 +625,7 @@ describe("crypto interop — repeat group decrypt", () => {
     const memo = new GroupDecryptMemo();
 
     const first = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
@@ -640,7 +633,7 @@ describe("crypto interop — repeat group decrypt", () => {
       memo,
     });
     const second = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg: { ...msg, from_agent_id: RESEALER_ID },
@@ -665,15 +658,16 @@ describe("crypto interop — repeat group decrypt", () => {
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       { dm: "hello" },
     );
 
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
-      msg: wireMessage("hpke-v1", encrypted.encrypted_payload),
+      msg: wireMessage("hpke-hybrid-v2", encrypted.encrypted_payload),
       memo,
     });
 
@@ -760,15 +754,16 @@ describe("crypto interop — verification status matrix", () => {
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       payload,
     );
 
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
-      msg: wireMessage("hpke-v1", encrypted.encrypted_payload),
+      msg: wireMessage("hpke-hybrid-v2", encrypted.encrypted_payload),
     });
 
     expect(result.verified).toBe(true);
@@ -780,26 +775,29 @@ describe("crypto interop — verification status matrix", () => {
   });
 
   it("invalid path (DM): sender key server returns a foreign signing key", async () => {
-    // The message was signed by `senderKeys.signing`, but the signing key
-    // fetched during verify points to a different agent. Bytes whose signature
-    // does not check out are refused on the 1:1 path exactly as they are in a
-    // group: no plaintext, and a `decrypt_error` naming the failure.
+    // The message was signed by the sender's derived signing key, but the
+    // signing key fetched during verify points to a different agent. Bytes whose
+    // signature does not check out are refused on the 1:1 path exactly as they
+    // are in a group: no plaintext, and a `decrypt_error` naming the failure.
     const payload = { msg: "spoofed" };
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       payload,
     );
 
-    const imposterKeys = generateAgentKeys();
-    const badStore: KeyStore = new Map([[SENDER_ID, imposterKeys]]);
+    const badStore = makeMockCore(
+      new Set([SENDER_ID]),
+      new Map([[SENDER_ID, publishedKeys(RESEALER_ID).signing_public_key]]),
+    );
 
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(badStore)),
+      core: asCore(badStore),
       configDir,
       agentId: RECIPIENT_ID,
-      msg: wireMessage("hpke-v1", encrypted.encrypted_payload),
+      msg: wireMessage("hpke-hybrid-v2", encrypted.encrypted_payload),
     });
 
     expect(result.verified).toBe(false);
@@ -829,14 +827,16 @@ describe("crypto interop — verification status matrix", () => {
       payload,
     );
 
-    const imposterKeys = generateAgentKeys();
-    const badStore: KeyStore = new Map([[SENDER_ID, imposterKeys]]);
+    const badStore = makeMockCore(
+      new Set([SENDER_ID]),
+      new Map([[SENDER_ID, publishedKeys(RESEALER_ID).signing_public_key]]),
+    );
 
     const msg = wireMessage("sender-key-v1", encrypted.encrypted_payload, {
       group_id: GROUP_ID,
     });
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(badStore)),
+      core: asCore(badStore),
       configDir,
       agentId: RECIPIENT_ID,
       msg,
@@ -864,16 +864,17 @@ describe("crypto interop — verification status matrix", () => {
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       payload,
     );
 
-    const mockCore = makeMockCore(store);
+    const mockCore = makeMockCore();
     const result = await decryptEnvelope({
       core: asCore(mockCore),
       configDir,
       agentId: RECIPIENT_ID,
-      msg: wireMessage("hpke-v1", encrypted.encrypted_payload, {
+      msg: wireMessage("hpke-hybrid-v2", encrypted.encrypted_payload, {
         from_agent_id: RESEALER_ID,
         // The header the sender supplies is relayed unchecked, so it still names
         // the original signer — it must not be what the check reads.
@@ -911,7 +912,7 @@ describe("crypto interop — verification status matrix", () => {
     );
 
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
       msg: wireMessage("sender-key-v1", encrypted.encrypted_payload, {
@@ -945,16 +946,16 @@ describe("crypto interop — verification status matrix", () => {
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       payload,
     );
 
-    const emptyStore: KeyStore = new Map();
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(emptyStore)),
+      core: asCore(makeMockCore(new Set())),
       configDir,
       agentId: RECIPIENT_ID,
-      msg: wireMessage("hpke-v1", encrypted.encrypted_payload),
+      msg: wireMessage("hpke-hybrid-v2", encrypted.encrypted_payload),
     });
 
     expect(result.decrypt_error).toBeNull();
@@ -973,7 +974,8 @@ describe("crypto interop — negative paths", () => {
     const encrypted = await encryptMessage(
       configDir,
       SENDER_ID,
-      recipientKeys.encryption.publicKey,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
       { payload: "original" },
     );
 
@@ -986,10 +988,10 @@ describe("crypto interop — negative paths", () => {
     const tamperedB64 = toBase64Url(raw);
 
     const result = await decryptEnvelope({
-      core: asCore(makeMockCore(store)),
+      core: asCore(makeMockCore()),
       configDir,
       agentId: RECIPIENT_ID,
-      msg: wireMessage("hpke-v1", tamperedB64),
+      msg: wireMessage("hpke-hybrid-v2", tamperedB64),
     });
 
     expect(result.decrypt_error).not.toBeNull();
@@ -997,6 +999,30 @@ describe("crypto interop — negative paths", () => {
     expect(result.plaintext).toBeUndefined();
     expect(result.verified).toBe(false);
     expect(result.verification_status).toBe("unverifiable");
+  });
+
+  it("a retired hpke-v1 tag is refused as an unknown encryption_version", async () => {
+    // `hpke-v1` and `hpke-hybrid-v1` are retired: 1:1 messages are
+    // `hpke-hybrid-v2` only. A row still tagged with the old version must not
+    // reach the crypto layer at all — it comes back closed, naming the version
+    // it could not dispatch, and carrying no plaintext.
+    const encrypted = await encryptMessage(
+      configDir,
+      SENDER_ID,
+      RECIPIENT_ID,
+      recipientKeysFor(RECIPIENT_ID),
+      { payload: "retired" },
+    );
+
+    const result = await decryptEnvelope({
+      core: asCore(makeMockCore()),
+      configDir,
+      agentId: RECIPIENT_ID,
+      msg: wireMessage("hpke-v1", encrypted.encrypted_payload),
+    });
+
+    expect(result.decrypt_error).toBe("unknown encryption_version: hpke-v1");
+    expect(result.plaintext).toBeUndefined();
   });
 
   // `missing encrypted_payload` and `unknown encryption_version` guard-clause
@@ -1010,7 +1036,7 @@ describe("crypto interop — negative paths", () => {
     // `encryption_version === 'sender-key-v1'` dispatch and the rine-core
     // `decryptGroupMessage` call — asserting `core.get` was never touched
     // is the only way to prove the short-circuit fires before dispatch.
-    const core = makeMockCore(store);
+    const core = makeMockCore();
     const result = await decryptEnvelope({
       core: asCore(core),
       configDir,
@@ -1055,6 +1081,8 @@ describe("crypto interop — AbortError propagation", () => {
     const core: MockCore = {
       get: vi.fn(async (p: string) => {
         if (p === `/agents/${RECIPIENT_ID}/messages`) throw abortErr;
+        const match = p.match(/^\/agents\/([^/]+)\/keys$/);
+        if (match) return publishedKeys(match[1] as string);
         throw new Error(`unexpected path: ${p}`);
       }),
     };
@@ -1111,7 +1139,7 @@ describe("crypto interop — sender-key retry", () => {
     // sees the primed state and succeeds. The first attempt runs before
     // the mock fires, so it fails with "sender key state not found".
     let ingestFired = false;
-    const core = makeMockCore(store);
+    const core = makeMockCore();
     const originalGet = core.get.getMockImplementation();
     core.get.mockImplementation(async (p: string) => {
       if (p === `/agents/${RECIPIENT_ID}/messages`) {
@@ -1155,7 +1183,7 @@ describe("crypto interop — sender-key retry", () => {
       payload,
     );
 
-    const core = makeMockCore(store);
+    const core = makeMockCore();
     const msg = wireMessage("sender-key-v1", encrypted.encrypted_payload, {
       group_id: GROUP_ID,
     });

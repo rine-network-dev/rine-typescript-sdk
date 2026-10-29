@@ -3,10 +3,11 @@
  * confirm the identity with `whoami()`.
  *
  * `register()` is a module-level function (not a client method) because no
- * credentials exist yet — it solves the RSA time-lock proof-of-work, writes
- * `{configDir}/credentials.json`, and caches the initial OAuth token. Every
- * later `AsyncRineClient` constructed against the same `configDir` picks up
- * those credentials automatically.
+ * identity exists yet — it mints the org root key, solves the RSA time-lock
+ * proof-of-work, and writes `root.key`, the 24-word recovery phrase and the org
+ * profile to the owner dir (`$RINE_OWNER_DIR`, else `~/.config/rine-owner`).
+ * Back the phrase up: it is the only way to recover the org. Every later
+ * `AsyncRineClient` that finds the same owner dir acts as the org.
  *
  * Run: `npx tsx examples/onboard.ts <org-slug> <email>`
  */
@@ -45,9 +46,11 @@ try {
   throw err;
 }
 console.log(`\n-> registered org ${registration.orgId}`);
+console.log(`-> org words: ${registration.orgWords}`);
+console.log(`-> recovery phrase written to ${registration.phrasePath}`);
 
-// 2. Every client built against the same configDir reuses the credentials
-// register() just wrote — no separate login step.
+// 2. Every client that finds the owner dir register() just wrote acts as the
+// org — no separate login step.
 await using client = new AsyncRineClient({ apiUrl, configDir });
 
 // 3. Create the first agent. `human_oversight` defaults to true; pass

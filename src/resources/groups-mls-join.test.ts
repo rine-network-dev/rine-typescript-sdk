@@ -1,171 +1,134 @@
 /**
- * Behavioural tests for the MLS join wiring on `GroupsResource.join()`
- * (Phase 6 — open-enrollment external-commit self-join).
+ * Behavioural tests for the MLS join wiring on `GroupsResource.join()`.
  *
- * Verifies the fallback ladder inside `installMlsWelcomesIfMls`:
- *   1. `processMlsWelcomes` always runs for an MLS-active group.
- *   2. If a Welcome installed local state (`loadMlsState` non-null) the
- *      external-join orchestrator is NOT called.
- *   3. If NO local state exists after the Welcome path (open enrollment), the
- *      `externalJoinMlsGroup` orchestrator IS called — keyed by the rine group
- *      UUID — as a best-effort fallback.
- *   4. Sender-key groups (`mls_group_id === null`) trigger neither.
+ * The ladder behind the join (Welcome, seat retake, external commit) is
+ * rine-core's `establishMlsMembership`, tested against the real native core in
+ * rine-core. What this file pins is what the SDK does around it on a 200 or 202:
+ * which calls it makes, what it warns and what it raises. The 409
+ * `already_a_member` path is in `groups-mls-join-seated.test.ts`.
  *
  * Core is mocked at the module boundary so no real MLS crypto runs.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	AGENT_ID,
+	CONFIG_DIR,
+	GROUP_ID,
+	makeHttp,
+	makeMessages,
+	outcome,
+} from "../_groups-join-stub.js";
 
-const processMlsWelcomesMock = vi.fn();
-const externalJoinMlsGroupMock = vi.fn();
-const loadMlsStateMock = vi.fn();
+const establishMlsMembershipMock = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const actual = (await importOriginal()) as Record<string, unknown>;
 	return {
 		...actual,
-		processMlsWelcomes: (...a: unknown[]) => processMlsWelcomesMock(...a),
-		externalJoinMlsGroup: (...a: unknown[]) => externalJoinMlsGroupMock(...a),
-		loadMlsState: (...a: unknown[]) => loadMlsStateMock(...a),
+		establishMlsMembership: (...a: unknown[]) => establishMlsMembershipMock(...a),
 	};
 });
 
 const { GroupsResource } = await import("./groups.js");
+const { MlsWelcomeRefusedError } = await import("@rine-network/core");
 
-type SDKHttpClient = import("../api/http.js").SDKHttpClient;
-type MessagesResource = import("./messages.js").MessagesResource;
-type GroupUuid = import("../types.js").GroupUuid;
+let warn: ReturnType<typeof vi.spyOn>;
 
-const GROUP_ID = "33333333-3333-4333-8333-333333333333" as GroupUuid;
-const AGENT_ID = "11111111-1111-4111-8111-111111111111";
-const CONFIG_DIR = "/tmp/rine-mls-join";
-const MLS_GROUP_ID = "mls-latch-abc";
-
-interface Call {
-	method: string;
-	path: string;
-}
-
-// HTTP stub: records calls and answers GET /groups/{id} with the supplied
-// `mls_group_id` latch so the resource can branch on MLS activation.
-function makeHttp(mlsGroupId: string | null): {
-	http: SDKHttpClient;
-	calls: Call[];
-} {
-	const calls: Call[] = [];
-	const group = {
-		id: GROUP_ID,
-		name: "dev",
-		handle: "#dev@acme.rine.network",
-		created_at: "2026-04-11T12:00:00Z",
-		mls_group_id: mlsGroupId,
-	};
-	const stub = {
-		configDir: CONFIG_DIR,
-		getCoreHttpClient: () => ({ __core: true }),
-		async get<T>(p: string): Promise<T> {
-			calls.push({ method: "GET", path: p });
-			return group as T;
-		},
-		async postWithStatus<T>(
-			p: string,
-		): Promise<{ status: number; body: T }> {
-			calls.push({ method: "POST", path: p });
-			return {
-				status: 200,
-				body: {
-					id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-					group_id: GROUP_ID,
-					agent_id: AGENT_ID,
-					role: "member",
-					joined_at: "2026-04-12T00:00:00.000Z",
-					agent_handle: "bot@acme.rine.network",
-				} as T,
-			};
-		},
-	} as unknown as SDKHttpClient;
-	return { http: stub, calls };
-}
-
-// Minimal MessagesResource stand-in: only `resolveSenderId` is used by the
-// MLS lifecycle hooks. Resolving it is what binds the acting agent.
-function makeMessages(): MessagesResource {
-	return {
-		resolveSenderId: vi.fn(async () => AGENT_ID),
-	} as unknown as MessagesResource;
-}
+beforeEach(() => {
+	establishMlsMembershipMock.mockResolvedValue(outcome("installed"));
+	warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+});
 
 afterEach(() => {
 	vi.clearAllMocks();
+	warn.mockRestore();
 });
 
-describe("GroupsResource.join — MLS join wiring (Phase 6)", () => {
-	beforeEach(() => {
-		processMlsWelcomesMock.mockResolvedValue(undefined);
-		externalJoinMlsGroupMock.mockResolvedValue({ epoch: 2 });
-	});
-
-	it("self-joins via external commit when no Welcome installed local state", async () => {
-		// Open enrollment: the Welcome path leaves no state for this group.
-		loadMlsStateMock.mockReturnValue(null);
-		const { http } = makeHttp(MLS_GROUP_ID);
-		const groups = new GroupsResource(http, makeMessages());
+describe("GroupsResource.join — MLS join wiring", () => {
+	it("establishes the state for the named group as the resolved agent", async () => {
+		const groups = new GroupsResource(makeHttp().http, makeMessages());
 
 		const result = await groups.join(GROUP_ID);
 
 		expect(result.status).toBe("joined");
-		expect(processMlsWelcomesMock).toHaveBeenCalledTimes(1);
-		expect(externalJoinMlsGroupMock).toHaveBeenCalledTimes(1);
-		// Keyed by the rine group UUID, acting as the resolved agent.
-		expect(externalJoinMlsGroupMock).toHaveBeenCalledWith(
+		expect(establishMlsMembershipMock).toHaveBeenCalledTimes(1);
+		// Keyed by the rine group UUID the caller named, acting as the resolved agent.
+		expect(establishMlsMembershipMock).toHaveBeenCalledWith(
 			CONFIG_DIR,
 			AGENT_ID,
 			GROUP_ID,
 			expect.anything(),
 			{ "X-Rine-Agent": AGENT_ID },
 		);
+		expect(warn).not.toHaveBeenCalled();
 	});
 
-	it("does NOT self-join when a Welcome already installed local state", async () => {
-		// Closed/invite enrollment: a member minted a Welcome → state exists.
-		loadMlsStateMock.mockReturnValue({
-			groupId: GROUP_ID,
-			epoch: 1,
-			cipherSuite: 0x0001,
-		});
-		const { http } = makeHttp(MLS_GROUP_ID);
-		const groups = new GroupsResource(http, makeMessages());
-
-		await groups.join(GROUP_ID);
-
-		expect(processMlsWelcomesMock).toHaveBeenCalledTimes(1);
-		expect(externalJoinMlsGroupMock).not.toHaveBeenCalled();
-	});
-
-	it("skips all MLS hooks for a sender-key group (mls_group_id null)", async () => {
-		const { http } = makeHttp(null);
-		const groups = new GroupsResource(http, makeMessages());
-
-		await groups.join(GROUP_ID);
-
-		expect(processMlsWelcomesMock).not.toHaveBeenCalled();
-		expect(externalJoinMlsGroupMock).not.toHaveBeenCalled();
-	});
-
-	it("swallows a failing external join — the join still succeeds", async () => {
-		loadMlsStateMock.mockReturnValue(null);
-		externalJoinMlsGroupMock.mockRejectedValue(
-			new Error("no published GroupInfo"),
+	it("does not set anything up for a request pending approval", async () => {
+		const pending = {
+			id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+			group_id: GROUP_ID,
+			agent_id: AGENT_ID,
+			status: "pending",
+			created_at: "2026-04-12T00:00:00.000Z",
+		};
+		const groups = new GroupsResource(
+			makeHttp(async () => ({ status: 202, body: pending })).http,
+			makeMessages(),
 		);
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const { http } = makeHttp(MLS_GROUP_ID);
-		const groups = new GroupsResource(http, makeMessages());
+
+		const result = await groups.join(GROUP_ID);
+
+		expect(result.status).toBe("pending");
+		expect(establishMlsMembershipMock).not.toHaveBeenCalled();
+	});
+
+	it("says nothing when the group has no ratchet tree", async () => {
+		establishMlsMembershipMock.mockResolvedValue(outcome("not_mls"));
+		const groups = new GroupsResource(makeHttp().http, makeMessages());
 
 		const result = await groups.join(GROUP_ID);
 
 		expect(result.status).toBe("joined");
-		expect(externalJoinMlsGroupMock).toHaveBeenCalledTimes(1);
-		expect(warn).toHaveBeenCalled();
-		warn.mockRestore();
+		expect(warn).not.toHaveBeenCalled();
+	});
+
+	it("warns with the reason of a failed step — the join still succeeds", async () => {
+		establishMlsMembershipMock.mockResolvedValue(
+			outcome("failed", { reason: "no published GroupInfo" }),
+		);
+		const groups = new GroupsResource(makeHttp().http, makeMessages());
+
+		const result = await groups.join(GROUP_ID);
+
+		expect(result.status).toBe("joined");
+		expect(warn).toHaveBeenCalledTimes(1);
+		expect(String(warn.mock.calls[0]?.[0])).toContain(
+			`MLS join setup for group ${GROUP_ID} failed (group reads will retry on demand): no published GroupInfo`,
+		);
+	});
+
+	it("warns when the establishment throws an ordinary error — the join still succeeds", async () => {
+		establishMlsMembershipMock.mockRejectedValue(new Error("socket hang up"));
+		const groups = new GroupsResource(makeHttp().http, makeMessages());
+
+		const result = await groups.join(GROUP_ID);
+
+		expect(result.status).toBe("joined");
+		expect(String(warn.mock.calls[0]?.[0])).toContain("socket hang up");
+	});
+
+	it("raises a refusal for the group instead of warning", async () => {
+		establishMlsMembershipMock.mockRejectedValue(
+			new MlsWelcomeRefusedError(GROUP_ID, "peer_not_admitted", "tree holds a member"),
+		);
+		const groups = new GroupsResource(makeHttp().http, makeMessages());
+
+		await expect(groups.join(GROUP_ID)).rejects.toMatchObject({
+			code: "RINE_WELCOME_REFUSED",
+			groupId: GROUP_ID,
+			reason: "peer_not_admitted",
+		});
+		expect(warn).not.toHaveBeenCalled();
 	});
 });

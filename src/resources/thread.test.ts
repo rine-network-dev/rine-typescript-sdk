@@ -118,7 +118,7 @@ function row(
 		from_agent_id: SELF_ID,
 		to_agent_id: PEER_ID,
 		encrypted_payload: "RECIPIENT-CT",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		metadata: {},
 		created_at: "2026-06-20T00:00:00.000Z",
 		...over,
@@ -221,6 +221,7 @@ describe("ConversationScope.thread()", () => {
 		//     status (load-bearing for push-injection filtering).
 		expect(out[0]?.verificationStatus).toBe("verified");
 		expect(out[1]?.verificationStatus).toBe("verified");
+		expect(out.map((entry) => entry.a2aCleartext)).toEqual([false, false]);
 
 		// the endpoint + limit wiring
 		expect(getCalls[0]?.path).toBe(`/conversations/${CONV_ID}/messages`);

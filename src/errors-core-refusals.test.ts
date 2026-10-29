@@ -31,7 +31,16 @@ import {
 	NotFoundError,
 	RineApiError,
 	RineError,
+	AGENT_ID_MISMATCH_CODE,
+	AgentIdMismatchError,
+	ESCROW_GAP_CODE,
+	EscrowGapError,
+	ORG_MISMATCH_CODE,
+	OrgMismatchError,
+	isAgentIdMismatchError,
+	isEscrowGapError,
 	isGroupIdentityMismatchError,
+	isOrgMismatchError,
 	isMlsDowngradeError,
 	isMlsInitInFlightError,
 } from "./index.js";
@@ -251,5 +260,23 @@ describe("the group-send refusals on the SDK's public surface", () => {
 		expect(mlsErrorCode(downgrade())).toBeNull();
 		expect(isRecoverableMlsRead(inFlight())).toBe(false);
 		expect(isRecoverableMlsRead(downgrade())).toBe(false);
+	});
+});
+
+describe("the identity and escrow refusals minted by rine-core", () => {
+	const cases = [
+		["EscrowGapError", () => new EscrowGapError("g", 3, "too_many_leaves" as never), ESCROW_GAP_CODE, isEscrowGapError],
+		["OrgMismatchError", () => new OrgMismatchError("org-a", "org-b"), ORG_MISMATCH_CODE, isOrgMismatchError],
+		["AgentIdMismatchError", () => new AgentIdMismatchError("a", "b"), AGENT_ID_MISMATCH_CODE, isAgentIdMismatchError],
+	] as const;
+
+	it.each(cases)("test_%s_when_caught_then_it_is_a_rine_error_with_a_stable_code", (_name, make, code, predicate) => {
+		const err = make();
+
+		expect(err).toBeInstanceOf(RineError);
+		expect(err).not.toBeInstanceOf(NotFoundError);
+		expect((err as { code?: string }).code).toBe(code);
+		expect(predicate(err)).toBe(true);
+		expect(predicate(new Error("other"))).toBe(false);
 	});
 });

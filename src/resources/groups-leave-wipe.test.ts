@@ -25,6 +25,7 @@ const holdsMlsStateMock = vi.fn();
 const senderKeyStateExistsMock = vi.fn();
 const removeMlsGroupMemberMock = vi.fn();
 const openMlsGroupMock = vi.fn();
+const settleEscrowMock = vi.fn();
 
 vi.mock("@rine-network/core", async (importOriginal) => {
   const actual = (await importOriginal()) as Record<string, unknown>;
@@ -37,6 +38,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
     senderKeyStateExists: (...a: unknown[]) => senderKeyStateExistsMock(...a),
     removeMlsGroupMember: (...a: unknown[]) => removeMlsGroupMemberMock(...a),
     openMlsGroup: (...a: unknown[]) => openMlsGroupMock(...a),
+    settleEscrow: (...a: unknown[]) => settleEscrowMock(...a),
   };
 });
 
@@ -176,6 +178,44 @@ describe("GroupsResource.removeMember — the leave wipe", () => {
     expect(result.left).toBe(false);
     expect(deleteMlsStateMock).not.toHaveBeenCalled();
     expect(deleteSenderKeyMock).not.toHaveBeenCalled();
+  });
+
+  it("a leave settles the group's escrow before the server delete and the wipe", async () => {
+    // The wipe discards the snapshot's untaken read-escrow exports, so they
+    // are settled first, locally: sealed under the cached key or parked for the
+    // sweep. The order is the behaviour: once the member is out, the server
+    // refuses its uploads.
+    const order: string[] = [];
+    settleEscrowMock.mockImplementation(() => void order.push("settle"));
+    deleteMlsStateMock.mockImplementation(() => void order.push("wipe"));
+    agentKeysExistMock.mockReturnValue(true);
+    holdsMlsStateMock.mockReturnValue(true);
+    senderKeyStateExistsMock.mockReturnValue(true);
+    const { http } = makeHttp("mls-latch-abc");
+    vi.spyOn(http, "delete").mockImplementation(async () => {
+      order.push("delete");
+    });
+    const groups = new GroupsResource(http, makeMessages());
+
+    await groups.removeMember(GROUP_ID, AGENT_ID);
+
+    expect(order).toEqual(["settle", "delete", "wipe"]);
+    expect(settleEscrowMock).toHaveBeenCalledWith(
+      expect.objectContaining({ configDir: CONFIG_DIR, agentId: AGENT_ID }),
+      GROUP_ID,
+    );
+  });
+
+  it("removing somebody else settles nothing", async () => {
+    agentKeysExistMock.mockReturnValue(true);
+    holdsMlsStateMock.mockReturnValue(true);
+    senderKeyStateExistsMock.mockReturnValue(true);
+    const { http } = makeHttp("mls-latch-abc");
+    const groups = new GroupsResource(http, makeMessages());
+
+    await groups.removeMember(GROUP_ID, OTHER_AGENT_ID);
+
+    expect(settleEscrowMock).not.toHaveBeenCalled();
   });
 
   it("a refused server DELETE never wipes local state", async () => {

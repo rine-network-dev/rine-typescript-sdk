@@ -2,7 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 // Zero-latency sleep so the watch() poll loop advances immediately.
 vi.mock("./utils/sleep.js", () => ({
-	sleep: () => Promise.resolve(),
 	sleepWithSignal: () => Promise.resolve(),
 }));
 

@@ -9,6 +9,10 @@
  * the API wire format.
  */
 
+import {
+	ENCRYPTION_VERSIONS,
+	impliedVoteEligibilityReason,
+} from "@rine-network/core";
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
@@ -275,15 +279,16 @@ export type WebhookJobStatusString =
 // EncryptionVersion — const-object enum
 // ---------------------------------------------------------------------------
 
+/** The wire values a caller can name; the strings are owned by core's `ENCRYPTION_VERSIONS`. */
 export const EncryptionVersion = {
-	HpkeV1: "hpke-v1",
-	SenderKeyV1: "sender-key-v1",
+	HpkeHybridV2: ENCRYPTION_VERSIONS.HPKE_HYBRID_V2,
+	SenderKeyV1: ENCRYPTION_VERSIONS.SENDER_KEY_V1,
 } as const;
 
 export type EncryptionVersionString =
 	(typeof EncryptionVersion)[keyof typeof EncryptionVersion];
 
-// Server-side regex from `src/rine/api/schemas.py::_validate_message_type`.
+// Server-side regex from `src/rine/api/schemas_message.py::_validate_message_type`.
 const MESSAGE_TYPE_RE = /^[a-z0-9][a-z0-9_-]*(\.[a-z0-9][a-z0-9_-]*){2,}$/;
 
 /** Validate a custom message type against the server-side regex. */
@@ -335,11 +340,33 @@ export const AgentReadSchema = z.object({
 });
 export type AgentRead = z.infer<typeof AgentReadSchema>;
 
-export const WhoAmISchema = z.object({
-	org: OrgReadSchema,
-	agents: z.array(AgentReadSchema),
-	trust_tier: z.number().int().default(0),
+/** The principal kinds `GET /whoami` names, as the server spells them. */
+export const WhoAmIPrincipalKind = {
+	Org: "org",
+	Branch: "branch",
+	Agent: "agent",
+	OrgReader: "org_reader",
+	BranchReader: "branch_reader",
+} as const;
+export type WhoAmIPrincipalKind =
+	(typeof WhoAmIPrincipalKind)[keyof typeof WhoAmIPrincipalKind];
+
+/** Who the bearer token speaks for; `branch` and `agent_id` are set where the kind has them. */
+export const WhoAmIPrincipalSchema = z.object({
+	kind: z.nativeEnum(WhoAmIPrincipalKind),
+	branch: z.string().nullable().default(null),
+	agent_id: z.string().uuid().nullable().default(null),
 });
+export type WhoAmIPrincipal = z.infer<typeof WhoAmIPrincipalSchema>;
+
+/** `GET /whoami`; `trust_tier` is the org's, lifted to the top for callers that read only that. */
+export const WhoAmISchema = z
+	.object({
+		org: OrgReadSchema,
+		principal: WhoAmIPrincipalSchema,
+		agents: z.array(AgentReadSchema),
+	})
+	.transform((body) => ({ ...body, trust_tier: body.org.trust_tier }));
 export type WhoAmI = z.infer<typeof WhoAmISchema>;
 
 // --- Messages ---
@@ -477,6 +504,13 @@ export const DecryptedMessageSchema = MessageReadSchema.extend({
 	decrypt_error_code: z.string().nullable().optional(),
 	key_changed: SenderKeyChangeSchema.optional(),
 	/**
+	 * Present (`true`) only on an A2A message that arrived as cleartext: its body
+	 * travelled without end-to-end encryption and is never `verified`. Absent on
+	 * every other row. `a2a_cleartext_notice` is the sentence to show beside it.
+	 */
+	a2a_cleartext: z.literal(true).optional(),
+	a2a_cleartext_notice: z.string().optional(),
+	/**
 	 * Present only on a closed-group row whose read ran an MLS catch-up. Absent
 	 * therefore means "this read applied nothing" — never "you are current".
 	 */
@@ -539,6 +573,8 @@ export interface ThreadEntry {
 	verificationStatus: VerificationStatus;
 	type: string;
 	createdAt: string;
+	/** True when the turn arrived as A2A cleartext; `text` then leads with the notice. */
+	a2aCleartext: boolean;
 }
 
 /**
@@ -602,7 +638,7 @@ export const GroupReadSchema = z.object({
 	conversation_id: z.string().uuid().nullable().default(null),
 	// Which of the CALLER'S OWN agents hold a seat in this group.
 	//
-	// `GET /groups` is org-scoped: it lists every group any agent of the org is
+	// `GET /groups` is key-scoped: an org key lists every group any agent of the org is
 	// in, so the row alone never said whether the agent behind THIS call may act
 	// in it. That is the question this answers, and it is answered per row, from
 	// the same page the caller already has.
@@ -708,25 +744,12 @@ const JoinRequestReadFields = z.object({
 });
 
 /**
- * What a server that predates the electorate implies about a row it said
- * nothing about, resolved from `status` — which is the same derivation the
- * Python twin `rine.vote_words.vote_eligibility_reason` makes.
- *
- * A flat `electorate_not_recorded` default was wrong on exactly one population
- * and it is the one this schema meets most: an **invitation**. Nobody votes on
- * one, `POST …/vote` answers 422 "Request is no longer pending", and every
- * surface rendering the row told the agent "you can vote". That breaks the one
- * invariant the whole read model is built on — the reason predicts the refusal,
- * one-to-one.
+ * A server that predates the electorate sends no reason; core's
+ * `impliedVoteEligibilityReason` reads the one its behaviour implies off
+ * `status`, so the reason still predicts the refusal one-to-one.
  */
-function impliedVoteReason(status: string): string {
-	return status === JoinRequestStatus.Pending
-		? VoteEligibility.NotRecorded
-		: VoteEligibility.NotPending;
-}
-
 export const JoinRequestReadSchema = JoinRequestReadFields.transform((r) => {
-	const reason = r.you_may_vote_reason ?? impliedVoteReason(r.status);
+	const reason = r.you_may_vote_reason ?? impliedVoteEligibilityReason(r.status);
 	return {
 		...r,
 		you_may_vote:

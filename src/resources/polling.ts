@@ -2,7 +2,7 @@
  * Polling resource — lightweight count check + callback-based watch().
  */
 
-import { loadCredentials } from "@rine-network/core";
+import { getProfile } from "@rine-network/core";
 import { ConfigError } from "../errors.js";
 import type { SDKHttpClient } from "../api/http.js";
 import { sleepWithSignal } from "../utils/sleep.js";
@@ -18,10 +18,10 @@ export class PollingResource {
 	 * Lightweight poll — returns message count for the authenticated agent.
 	 * No auth required, firewall-friendly.
 	 *
-	 * Route: reads `poll_url` from the default credential entry (a full path
+	 * Route: reads `poll_url` from the active profile (a full path
 	 * like `/poll/<token>` stamped in at agent-create time). The server does
 	 * NOT expose a bare `/poll` endpoint — always read the token-scoped URL
-	 * out of credentials.
+	 * out of the profile.
 	 *
 	 * @example
 	 * ```ts
@@ -29,7 +29,7 @@ export class PollingResource {
 	 * ```
 	 */
 	async poll(opts?: { signal?: AbortSignal }): Promise<number> {
-		const entry = loadCredentials(this.http.configDir).default;
+		const entry = getProfile(this.http.configDir, this.http.profile);
 		const pollUrl = entry?.poll_url;
 		if (!pollUrl) {
 			throw new ConfigError(

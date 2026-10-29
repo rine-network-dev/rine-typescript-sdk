@@ -5,7 +5,6 @@ import type { SDKHttpClient } from "../api/http.js";
 // fake timers. Must be declared before the SUT import so the mock is applied
 // when `streams.ts` resolves the `../utils/sleep.js` dependency.
 vi.mock("../utils/sleep.js", () => ({
-	sleep: () => Promise.resolve(),
 	sleepWithSignal: () => Promise.resolve(),
 }));
 

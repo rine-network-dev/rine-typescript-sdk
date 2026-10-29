@@ -91,7 +91,7 @@ function refusal(groupId: string) {
 
 const opened = {
 	plaintext: JSON.stringify({ ok: true }),
-	senderKid: `rine:${SENDER_ID}`,
+	senderKid: `rine:${SENDER_ID}#0`,
 	verified: true,
 	verificationStatus: "verified",
 };

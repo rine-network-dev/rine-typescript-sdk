@@ -48,7 +48,8 @@ import {
 import {
 	addMembersToMls,
 	initMlsForGroup,
-	installMlsWelcomesIfMls,
+	establishJoinedMls,
+	memberAlreadySeated,
 	mlsInitApplies,
 	refreshCreatedGroup,
 	resumeMlsAdmission,
@@ -178,13 +179,14 @@ export class GroupsResource {
 	 * (`./groups-resolve.js`), so a group named one way here is the same group
 	 * named that way anywhere else in the SDK.
 	 *
-	 * A UUID costs one indexed `GET /groups/{id}` — the group's own row, which
-	 * the server serves to the org that OWNS the group as well as to one seated
-	 * in it, so a group your org created and has since vacated still resolves by
-	 * id. A handle or a name costs one `GET /groups`, scoped to the groups your
-	 * org holds a seat in.
+	 * A UUID costs one indexed `GET /groups/{id}` — the group's own row. An org
+	 * key is served for a group its org OWNS as well as for one seated in, so a
+	 * group your org created and has since vacated still resolves by id; an
+	 * agent or branch key is served only for a group with a seat in its scope.
+	 * A handle or a name costs one `GET /groups`, scoped to the groups your
+	 * key can see (an org key's: the org's).
 	 *
-	 * A UUID naming a group your org neither owns nor sits in is refused, and
+	 * A UUID naming a group your key cannot read is refused, and
 	 * refused identically whether the id belongs to somebody else's group or to
 	 * no group at all. The refusal names the groups you DO have — that second
 	 * `GET /groups` is the only read a refused id costs, and a resolved one
@@ -224,11 +226,11 @@ export class GroupsResource {
 	 *
 	 * 🔴 Not {@link resolveRef}, and the difference is the whole reason this
 	 * exists. Every rung `resolveRef` takes is scoped to a group this caller's
-	 * org already owns or holds a seat in — the group's own row for a UUID, the
-	 * org's list for a handle or a name; join is the one group verb whose target
+	 * scope already owns or holds a seat in — the group's own row for a UUID, the
+	 * caller's list for a handle or a name; join is the one group verb whose target
 	 * is by definition a group you are NOT in, so those are the one set it cannot
-	 * be found in. This walks the org's seats, then this agent's invitations,
-	 * then the public directory, matching the handle exactly at every rung.
+	 * be found in. This walks this agent's seats, then its invitations,
+	 * then the org's open and voted groups, then the public directory, matching the handle exactly at every rung.
 	 *
 	 * A bare name walks ONE rung and it is not any of those: this agent's own
 	 * pending invitations, and nothing wider. A join is irreversible and the
@@ -340,10 +342,10 @@ export class GroupsResource {
 	 *
 	 * 🔴 The identity check is load-bearing, not defensive tidiness. This is the
 	 * read every MLS flow that starts from a bare group id comes through, and
-	 * `installMlsWelcomesIfMls` scopes its Welcome pass by what this returns. A
-	 * body naming a group the caller never asked about would make that scope
-	 * match no refusal at all, so a Welcome this client REFUSED would be withheld
-	 * rather than raised and the join would report success holding no MLS state.
+	 * a Welcome pass scoped by what this returns would, given a body naming a
+	 * group the caller never asked about, match no refusal at all, so a Welcome
+	 * this client REFUSED would be withheld rather than raised and the join would
+	 * report success holding no MLS state.
 	 * Refusing here is what lets every caller treat the returned id as the one it
 	 * asked for.
 	 *
@@ -400,9 +402,9 @@ export class GroupsResource {
 	 *
 	 * Answers `{status:"pending"}` for a group that approves join requests, and
 	 * `{status:"joined"}` once the agent is a member. On an MLS group the
-	 * membership is followed by the local half: any pending Welcome is installed,
-	 * and an open-enrollment group with no Welcome to install is self-joined by
-	 * external commit.
+	 * membership is followed by the local half: a pending Welcome is installed,
+	 * else a leaf the agent holds with no state is taken back, else the agent
+	 * self-joins by external commit.
 	 *
 	 * This is also how a **nominee consents**. An agent a member nominated into
 	 * a `majority` or `unanimity` group calls this on the row it can see in
@@ -412,23 +414,32 @@ export class GroupsResource {
 	 * rather than leaving them a voucher to redeem, and it is why no vote can
 	 * conscript an agent into a group it never asked to be in.
 	 *
-	 * 🔴 **Throws `MlsWelcomeRefusedError` when the group substitution guard
-	 * refuses a Welcome for THIS group.** That is a verdict about who
-	 * minted the Welcome — a server offering state for a group it does not hold —
-	 * so it is raised rather than logged, exactly as `rine.groups.join()` does on
-	 * the Python SDK. Catch it by its `code` (`RINE_WELCOME_REFUSED`) or by its
-	 * `groupId`/`reason`, never by message text.
+	 * 🔴 **Throws `MlsWelcomeRefusedError` when the join meets a refusal for THIS
+	 * group.** Two kinds of verdict use this error. Most reasons are the
+	 * substitution guard's verdict about who minted a Welcome; retrying the join
+	 * does not change them. Reason `peer_not_admitted` is different: the group's
+	 * tree holds a member the server no longer vouches for. The Welcome install,
+	 * the external join and the seat retake all raise it, and it clears once any
+	 * member reclaims that seat with `rine group resume-admission --reclaim`;
+	 * then repeat the join. Catch it by its `code` (`RINE_WELCOME_REFUSED`) or by
+	 * its `groupId`/`reason`, never by message text.
 	 *
 	 * **What still holds when it throws:** the rine membership. The join POST has
 	 * already returned 200 and the agent is a member of the group — what failed
 	 * is only the local MLS state, so the group's messages stay unreadable until
-	 * an honest Welcome arrives. Do not retry the join to fix it; nothing about
-	 * the membership needs fixing.
+	 * the refusal clears.
+	 *
+	 * **Joining again from a seat with no local state works.** An agent that is
+	 * already a member and holds no MLS state for the group (its Welcome was
+	 * refused before the seat was reclaimed, or the state was lost) gets the 409
+	 * `already_a_member`; the SDK runs the same ladder (Welcome, then its own
+	 * leaf's retake, then the external join) and answers
+	 * `{status:"joined"}` with the member row once the state is in place. The 409
+	 * is raised as before when the agent holds state, or the setup leaves it none;
+	 * a setup that fails on this path warns first, then the 409 stands.
 	 *
 	 * Every other MLS setup failure is best-effort and warns: a transient one
-	 * leaves group reads to recover via the read-path Welcome retry, and a
-	 * refusal naming a DIFFERENT group is that group's business, not this
-	 * join's.
+	 * leaves group reads to recover via the read-path Welcome retry.
 	 */
 	async join(
 		groupId: GroupUuid,
@@ -436,11 +447,23 @@ export class GroupsResource {
 	): Promise<JoinResult> {
 		const body: Record<string, unknown> = {};
 		if (opts.message !== undefined) body["message"] = opts.message;
-		const res = await this.http.postWithStatus<unknown>(
-			`/groups/${groupId}/join`,
-			body,
-			{ signal: opts.signal, operation: "groupsJoin" },
-		);
+		let res: { status: number; body: unknown };
+		try {
+			res = await this.http.postWithStatus<unknown>(
+				`/groups/${groupId}/join`,
+				body,
+				{ signal: opts.signal, operation: "groupsJoin" },
+			);
+		} catch (err) {
+			const ctx = this.mlsContext();
+			const seated =
+				ctx &&
+				(await memberAlreadySeated(ctx, groupId, opts.signal, err, async () =>
+					(await this.members(groupId)).items,
+				));
+			if (!seated) throw err;
+			return { status: "joined", member: seated } as JoinResult;
+		}
 		if (res.status === 202) {
 			// Pending approval — not yet a member, so no Welcome to install.
 			return {
@@ -450,15 +473,14 @@ export class GroupsResource {
 		}
 		const member = parse(GroupMemberSchema, res.body);
 
-		// Immediate join: if the group uses MLS, install any pending Welcome so
-		// the joiner's local MLS state (keyed by the rine group UUID) is
-		// established. Best-effort — a failure leaves group reads to recover
-		// via the read-path Welcome retry — with ONE exception, which is why
-		// this line is awaited and not caught: a Welcome the substitution guard
-		// REFUSED for this group throws out of `join()`. See the docstring
-		// above; do not re-wrap this in a `.catch()`.
+		// Immediate join: if the group uses MLS, establish the joiner's local MLS
+		// state (keyed by the rine group UUID). Best-effort — a failure leaves
+		// group reads to recover via the read-path Welcome retry — with ONE
+		// exception, which is why this line is awaited and not caught: a refusal
+		// for this group throws out of `join()`. See the docstring above; do not
+		// re-wrap this in a `.catch()`.
 		const ctx = this.mlsContext();
-		if (ctx) await installMlsWelcomesIfMls(ctx, groupId, opts.signal);
+		if (ctx) await establishJoinedMls(ctx, groupId, opts.signal);
 		return { status: "joined", member } as JoinResult;
 	}
 
@@ -697,10 +719,15 @@ export class GroupsResource {
 	 * report what it cost.
 	 *
 	 * Both encryptions recover, and the report says which one ran. On MLS the
-	 * cheap rung replays the commits the server still holds and posts nothing;
-	 * the expensive one posts a single external commit that re-seats this
-	 * agent's existing leaf at the current epoch — O(N), billed to every member
-	 * — and runs only when replay cannot bridge the gap. On sender keys there is
+	 * cheap rung replays the commits the server still holds and posts nothing
+	 * itself; the expensive one posts a single external commit that re-seats
+	 * this agent's existing leaf at the current epoch — O(N), billed to every
+	 * member — and runs only when replay cannot bridge the gap. Either rung ends
+	 * by moving this agent's own leaf to its current key, which can post one
+	 * path-only commit; `seat` on the result is where that leaf stands when the
+	 * call returns, so a held update the group rolled back is dropped and
+	 * replaced by a fresh one in the same call and reads `awaiting_ack`, not
+	 * `rolled_back`. On sender keys there is
 	 * no epoch chain to walk: the recovery installs the sender keys this agent
 	 * is missing, from the distribution DMs waiting in its own inbox, and
 	 * commits nothing.

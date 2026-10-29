@@ -1,11 +1,12 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { SpiffeVerificationError } from "@rine-network/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { SDKHttpClient } from "../api/http.js";
 import { ValidationError } from "../errors.js";
 import type { AgentUuid } from "../types.js";
+import {
+	type CustodyFixture,
+	makeCustodyFixture,
+} from "@rine-network/core/testing";
 import { IdentityResource } from "./identity.js";
 
 // ---------------------------------------------------------------------------
@@ -45,15 +46,12 @@ function sampleVerifyResult(overrides: Record<string, unknown> = {}) {
  * canned `{audience, expires_in}`, the verify endpoint returns the supplied
  * `verifyResponse` (or throws it when it's an Error, to model a server 4xx).
  */
-function makeVerifyStub(
-	configDir: string,
-	verifyResponse: unknown,
-): { http: SDKHttpClient; posts: PostCall[] } {
+function makeVerifyStub(verifyResponse: unknown): {
+	http: SDKHttpClient;
+	posts: PostCall[];
+} {
 	const posts: PostCall[] = [];
 	const stub = {
-		get configDir() {
-			return configDir;
-		},
 		async post<T>(
 			p: string,
 			body?: unknown,
@@ -79,7 +77,7 @@ function makeVerifyStub(
 
 describe("IdentityResource.verifyIdentity", () => {
 	it("posts challenge then verify with {svid} in order and returns the typed result (ES256 happy path)", async () => {
-		const { http, posts } = makeVerifyStub("", sampleVerifyResult());
+		const { http, posts } = makeVerifyStub(sampleVerifyResult());
 		const identity = new IdentityResource(http);
 
 		const result = await identity.verifyIdentity(AGENT_ID, {
@@ -103,7 +101,7 @@ describe("IdentityResource.verifyIdentity", () => {
 	});
 
 	it("forwards the caller AbortSignal to both underlying POSTs", async () => {
-		const { http, posts } = makeVerifyStub("", sampleVerifyResult());
+		const { http, posts } = makeVerifyStub(sampleVerifyResult());
 		const identity = new IdentityResource(http);
 		const ac = new AbortController();
 
@@ -121,7 +119,6 @@ describe("IdentityResource.verifyIdentity", () => {
 		// challenge audience (or the SVID fails parse/sig). It must propagate as
 		// the SDK's typed ValidationError, not be swallowed.
 		const { http, posts } = makeVerifyStub(
-			"",
 			new ValidationError("challenge audience mismatch"),
 		);
 		const identity = new IdentityResource(http);
@@ -139,7 +136,7 @@ describe("IdentityResource.verifyIdentity", () => {
 		// biome-ignore lint/performance/noDelete: test-scoped env teardown.
 		delete process.env.SPIFFE_ENDPOINT_SOCKET;
 
-		const { http, posts } = makeVerifyStub("", sampleVerifyResult());
+		const { http, posts } = makeVerifyStub(sampleVerifyResult());
 		const identity = new IdentityResource(http);
 
 		try {
@@ -162,13 +159,13 @@ describe("IdentityResource.verifyIdentity", () => {
 // ---------------------------------------------------------------------------
 
 describe("IdentityResource.createAgent auto-verify hook", () => {
-	let configDir: string;
+	let fx: CustodyFixture;
 
 	beforeEach(() => {
-		configDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-sdk-spiffe-"));
+		fx = makeCustodyFixture();
 	});
 	afterEach(() => {
-		fs.rmSync(configDir, { recursive: true, force: true });
+		fx.cleanup();
 	});
 
 	function agentAnswerStub(verifyResponse: unknown): {
@@ -178,7 +175,19 @@ describe("IdentityResource.createAgent auto-verify hook", () => {
 		const posts: PostCall[] = [];
 		const stub = {
 			get configDir() {
-				return configDir;
+				return fx.dirs.configDir;
+			},
+			get ownerDir() {
+				return fx.dirs.ownerDir;
+			},
+			get dirs() {
+				return fx.dirs;
+			},
+			custodyDirs() {
+				return fx.dirs;
+			},
+			get profile() {
+				return "default";
 			},
 			async post<T>(
 				p: string,
@@ -188,7 +197,7 @@ describe("IdentityResource.createAgent auto-verify hook", () => {
 				posts.push({ path: p, body, opts });
 				if (p === "/agents") {
 					return {
-						id: AGENT_ID,
+						id: (body as { id: string }).id,
 						name: "alice",
 						handle: "alice@acme.rine.network",
 						human_oversight: true,
@@ -206,8 +215,11 @@ describe("IdentityResource.createAgent auto-verify hook", () => {
 				if (verifyResponse instanceof Error) throw verifyResponse;
 				return verifyResponse as T;
 			},
-			// getCoreHttpClient intentionally absent → MLS publish best-effort
-			// catch swallows the TypeError, mirroring identity.test.ts.
+			// A core client that cannot post → the MLS publish is best-effort and
+			// its catch swallows the TypeError, mirroring identity.test.ts.
+			getCoreHttpClient() {
+				return {} as never;
+			},
 		} as unknown as SDKHttpClient;
 		return { http: stub, posts };
 	}
@@ -218,14 +230,15 @@ describe("IdentityResource.createAgent auto-verify hook", () => {
 
 		const agent = await identity.createAgent("alice", { svid: ES256_SVID });
 
-		expect(agent.id).toBe(AGENT_ID);
+		const mintedId = (posts[0]?.body as { id: string }).id;
+		expect(agent.id).toBe(mintedId);
 		expect(agent.identity).toMatchObject({ trust_tier: 2 });
 		expect(agent.identityError).toBeUndefined();
 		// The create → challenge → verify legs all fired.
 		expect(posts.map((p) => p.path)).toEqual([
 			"/agents",
-			CHALLENGE_PATH,
-			VERIFY_PATH,
+			`/agents/${mintedId}/verify-svid/challenge`,
+			`/agents/${mintedId}/verify-svid`,
 		]);
 	});
 
@@ -235,14 +248,14 @@ describe("IdentityResource.createAgent auto-verify hook", () => {
 		const prev = process.env.SPIFFE_ENDPOINT_SOCKET;
 		// biome-ignore lint/performance/noDelete: test-scoped env teardown.
 		delete process.env.SPIFFE_ENDPOINT_SOCKET;
-		const { http } = agentAnswerStub(sampleVerifyResult());
+		const { http, posts } = agentAnswerStub(sampleVerifyResult());
 		const identity = new IdentityResource(http);
 
 		try {
 			const agent = await identity.createAgent("alice", {
 				verifyIdentity: true,
 			});
-			expect(agent.id).toBe(AGENT_ID);
+			expect(agent.id).toBe((posts[0]?.body as { id: string }).id);
 			expect(agent.identity).toBeUndefined();
 			expect(agent.identityError).toMatch(/JWT-SVID/);
 		} finally {

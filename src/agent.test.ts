@@ -43,7 +43,7 @@ function makeDecrypted(
 		from_agent_id: randomUUID(),
 		to_agent_id: randomUUID(),
 		encrypted_payload: "enc",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		metadata: {},
 		created_at: "2026-04-11T00:00:00.000Z",
 		plaintext: "payload",

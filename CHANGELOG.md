@@ -5,6 +5,73 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-10-29
+
+An org is now built from one secret, the **org root**, and `client_secret` no longer exists.
+This is a breaking release: an SDK older than 0.14.0 cannot sign in to a server that runs this
+release, and every org registered before it is retired, so you onboard again.
+
+**What you will see differently:**
+
+- `client_id`, `client_secret` and `credentials.json` are gone, and so are the
+  `RINE_CLIENT_ID` and `RINE_CLIENT_SECRET` variables, which are ignored. A client signs in with
+  a short-lived signed assertion. A clock more than 30 seconds ahead cannot sign in, and the
+  error says so.
+- Onboarding creates the org root and a 24-word recovery phrase in an owner directory
+  (`RINE_OWNER_DIR`, default `~/.config/rine-owner`) that is kept apart from the config
+  directory. The result carries the phrase file's path, never the words. An agent runtime
+  reads only its own keys, profile and token cache.
+- Creating and rotating an agent uploads its public keys with a certificate. Rotation needs the
+  org root or a branch key; after it, the holder of the root can still read the older
+  generation's 1:1 traffic.
+- Every 1:1 message is post-quantum (`hpke-hybrid-v2`), every closed group uses the
+  post-quantum MLS suite only, and an agent cannot be created without a post-quantum key.
+- Every agent's verification words change with its new keys, and an org gets eight of its own.
+- The root of every member org reads what a group's other members said in the epochs its own
+  agents held. Say nothing in a shared group that you would not let those orgs read.
+- An agent client acts only as itself.
+
+### Added
+
+- Recovery from the phrase, branch creation and revocation, and the group read escrow, all
+  through the client, on top of the matching `@rine-network/core` 0.17.0 primitives.
+- `GROUP_READERS_NOTICE` is re-exported, so a tool description built on the SDK alone can
+  carry the sentence that an org's readers can read its groups.
+- An A2A message that arrived as cleartext now opens through `messages.inbox()`, `messages.read()`,
+  `client.messages()` and `conversation(id).thread()` instead of coming back as a decrypt error.
+  Its `plaintext` is the parts the external client posted, the row is `verified: false` with
+  `verification_status: "unverifiable"`, and it carries `a2a_cleartext: true` and
+  `a2a_cleartext_notice` ("Received as A2A cleartext: this message was not end-to-end encrypted.").
+  A thread entry's `text` leads with that sentence in brackets, and the entry carries
+  `a2aCleartext: true` so a caller need not parse the text. Sealed rows are unchanged, and
+  `none` on any other message type is still refused as an unknown `encryption_version`.
+  A `defineAgent` handler now receives such a message, with `verified: false`, where it used to
+  see a row that failed to decrypt.
+- `client.identity.rotateKeys()` moves the agent's leaf in each closed group after the key step
+  and returns the seat report beside the agent row: `key_packages` and `group_seats`.
+  A seat that could not move yet is retried by the heartbeat.
+
+### Removed
+
+- `EncryptionVersion.HpkeV1` and `addPostQuantumKey`: a post-quantum key is part of creating an
+  agent, and a message sealed the old way is refused.
+- The `client_secret` field of the onboarding result and every credentials-file option.
+
+### Added — vote eligibility words
+
+- `VOTE_ELIGIBILITY_CLAUSES`, `describeVoteEligibility` and the type `VoteEligibilityFallbacks` are exported:
+  the one table and renderer that eve, mastra and the CLI use to say why a vote is or is not open to a voter.
+
+### Changed
+
+- `payQuote` and `fulfill` refuse a quote or payment unless its sender is `verified`. A refused payment gets a
+  `payment-failed` receipt with reason `inauthentic-sender`.
+- A sender whose signing key could not be read is refused with the new `X402_ERROR.SENDER_UNVERIFIABLE`
+  (`sender-unverifiable`), which is retryable. `payQuote` throws it before any spend is reserved. `fulfill` throws it
+  without sending a receipt, so the payer's thread stays open and the same payment can be fulfilled once the key lookup
+  works. Nothing weaker than `verified` is ever paid or settled. A row that failed to decrypt, has no
+  authenticated sender or is a cleartext A2A message cannot pass on a retry, so it keeps `inauthentic-sender`.
+
 ## [0.13.0] - 2026-09-14
 
 ### Added — `read({ peek: true })` reads a message without consuming it

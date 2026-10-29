@@ -12,6 +12,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SDKHttpClient } from "./api/http.js";
+import { OrgMismatchError } from "@rine-network/core";
+import { WhoAmIPrincipalKind } from "./types.js";
+import {
+	type CustodyFixture,
+	makeCustodyFixture,
+} from "@rine-network/core/testing";
 
 // ---------------------------------------------------------------------------
 // register() — mock the rine-core registration helper
@@ -66,7 +72,8 @@ describe("register() — slug validation (client-side)", () => {
 	it("accepts a valid slug", async () => {
 		performRegistrationMock.mockResolvedValueOnce({
 			org_id: "abc",
-			client_id: "cid",
+			org_words: "one two three",
+			phrase_path: "/owner/phrase.txt",
 		});
 		const out = await register({
 			apiUrl: "https://rine.network",
@@ -75,7 +82,11 @@ describe("register() — slug validation (client-side)", () => {
 			slug: "my-org",
 			name: "My Org",
 		});
-		expect(out).toEqual({ orgId: "abc", clientId: "cid" });
+		expect(out).toEqual({
+			orgId: "abc",
+			orgWords: "one two three",
+			phrasePath: "/owner/phrase.txt",
+		});
 	});
 
 	it("rejects uppercase slugs", () => {
@@ -112,11 +123,13 @@ describe("register() — error mapping", () => {
 		await expect(register(goodOpts)).rejects.toBeInstanceOf(ConflictError);
 	});
 
-	it("maps 'Conflict' message to ConflictError", async () => {
+	it("maps 'Conflict' message to ConflictError, keeping the server's words", async () => {
 		performRegistrationMock.mockRejectedValueOnce(
-			new Error("Conflict: email or slug already registered"),
+			new Error("Conflict: Slug already taken"),
 		);
-		await expect(register(goodOpts)).rejects.toBeInstanceOf(ConflictError);
+		const err = await register(goodOpts).catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(ConflictError);
+		expect((err as Error).message).toContain("Slug already taken");
 	});
 
 	it("maps 'Rate limited' to RateLimitError", async () => {
@@ -190,7 +203,7 @@ describe("Domain constant objects", () => {
 
 	it("EncryptionVersion uses the on-wire strings", () => {
 		expect(EncryptionVersion).toEqual({
-			HpkeV1: "hpke-v1",
+			HpkeHybridV2: "hpke-hybrid-v2",
 			SenderKeyV1: "sender-key-v1",
 		});
 	});
@@ -210,14 +223,19 @@ interface Call {
 }
 
 interface Responder {
-	(method: string, path: string): unknown;
+	(method: string, path: string, body?: unknown): unknown;
 }
 
-function makeHttp(configDir: string, responder: Responder): {
+function makeHttp(
+	configDir: string,
+	responder: Responder,
+	opts: { ownerDir?: string; profile?: string; localOrgId?: string } = {},
+): {
 	http: SDKHttpClient;
 	calls: Call[];
 } {
 	const calls: Call[] = [];
+	const ownerDir = opts.ownerDir ?? configDir;
 	const record = (
 		method: string,
 		p: string,
@@ -225,11 +243,33 @@ function makeHttp(configDir: string, responder: Responder): {
 		opts?: { signal?: AbortSignal },
 	): unknown => {
 		calls.push({ method, path: p, body, opts });
-		return responder(method, p);
+		return responder(method, p, body);
 	};
 	const stub = {
 		get configDir() {
 			return configDir;
+		},
+		get ownerDir() {
+			return ownerDir;
+		},
+		get dirs() {
+			return { configDir, ownerDir };
+		},
+		custodyDirs() {
+			return { configDir, ownerDir };
+		},
+		get profile() {
+			return opts.profile ?? "default";
+		},
+		get localOrgId() {
+			return opts.localOrgId;
+		},
+		getCoreHttpClient() {
+			return {
+				async post<T>(p: string, body?: unknown): Promise<T> {
+					return record("POST", p, body) as T;
+				},
+			};
 		},
 		async get<T>(p: string, opts?: { signal?: AbortSignal }): Promise<T> {
 			return record("GET", p, undefined, opts) as T;
@@ -272,6 +312,14 @@ function sampleOrg(overrides: Record<string, unknown> = {}): Record<string, unkn
 	};
 }
 
+function sampleWhoAmI(): Record<string, unknown> {
+	return {
+		org: sampleOrg(),
+		principal: { kind: "org", branch: null, agent_id: null },
+		agents: [],
+	};
+}
+
 function sampleAgent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
 	return {
 		id: AGENT_ID,
@@ -302,49 +350,46 @@ function sampleErasure(overrides: Record<string, unknown> = {}): Record<string, 
 // ---------------------------------------------------------------------------
 
 describe("IdentityResource.createAgent — poll_url persistence", () => {
-	let configDir: string;
+	let fx: CustodyFixture;
 	beforeEach(() => {
-		configDir = fs.mkdtempSync(path.join(os.tmpdir(), "rine-sdk-lifecycle-"));
-		// Seed credentials.json so saveCredentials has a `default` entry to mutate.
-		fs.writeFileSync(
-			path.join(configDir, "credentials.json"),
-			JSON.stringify({ default: { client_id: "cid", client_secret: "sec" } }),
-		);
+		fx = makeCustodyFixture();
 	});
 	afterEach(() => {
-		fs.rmSync(configDir, { recursive: true, force: true });
+		fx.cleanup();
 	});
 
-	it("writes poll_url to credentials.json when the server returns it", async () => {
-		const pollUrl = "https://rine.network/poll/abc123";
-		const { http } = makeHttp(configDir, () =>
-			sampleAgent({ poll_url: pollUrl }),
-		);
-		const identity = new IdentityResource(http);
-
-		await identity.createAgent("alice");
-
-		const creds = JSON.parse(
-			fs.readFileSync(path.join(configDir, "credentials.json"), "utf-8"),
+	function profiles(): Record<string, { poll_url?: string }> {
+		return JSON.parse(
+			fs.readFileSync(path.join(fx.dirs.configDir, "profiles.json"), "utf-8"),
 		) as Record<string, { poll_url?: string }>;
-		expect(creds.default?.poll_url).toBe(pollUrl);
-	});
+	}
 
-	it("does not touch credentials.json when poll_url is absent", async () => {
-		const before = fs.readFileSync(
-			path.join(configDir, "credentials.json"),
-			"utf-8",
+	it("writes poll_url to the agent profile when the server returns it", async () => {
+		const pollUrl = "https://rine.network/poll/abc123";
+		const { http } = makeHttp(
+			fx.dirs.configDir,
+			(_method, _path, body) =>
+				sampleAgent({ id: (body as { id: string }).id, poll_url: pollUrl }),
+			{ ownerDir: fx.dirs.ownerDir, profile: "agent" },
 		);
-		const { http } = makeHttp(configDir, () => sampleAgent());
 		const identity = new IdentityResource(http);
 
 		await identity.createAgent("alice");
 
-		const after = fs.readFileSync(
-			path.join(configDir, "credentials.json"),
-			"utf-8",
+		expect(profiles().agent?.poll_url).toBe(pollUrl);
+	});
+
+	it("does not write a poll_url when the server omits it", async () => {
+		const { http } = makeHttp(
+			fx.dirs.configDir,
+			(_method, _path, body) => sampleAgent({ id: (body as { id: string }).id }),
+			{ ownerDir: fx.dirs.ownerDir, profile: "agent" },
 		);
-		expect(after).toBe(before);
+		const identity = new IdentityResource(http);
+
+		await identity.createAgent("alice");
+
+		expect(profiles().agent?.poll_url).toBeUndefined();
 	});
 });
 
@@ -381,7 +426,7 @@ describe("IdentityResource.updateOrg", () => {
 		await identity.updateOrg({ name: "New" });
 		await identity.eraseOrg({ confirm: true });
 
-		// 2 calls (PATCH + DELETE) — no GET /org or GET /agents.
+		// 2 calls (PATCH + DELETE) — no GET /whoami.
 		expect(call).toBe(2);
 		expect(calls.some((c) => c.method === "GET")).toBe(false);
 	});
@@ -414,8 +459,7 @@ describe("IdentityResource.eraseOrg — confirm guard", () => {
 
 	it("DELETEs /orgs/{orgId} when confirm=true and returns parsed ErasureResult", async () => {
 		const { http, calls } = makeHttp("/tmp/x", (method, p) => {
-			if (method === "GET" && p === "/agents") return [];
-			if (method === "GET" && p === "/org") return sampleOrg();
+			if (method === "GET" && p === "/whoami") return sampleWhoAmI();
 			if (method === "DELETE" && p === `/orgs/${ORG_ID}`) return sampleErasure();
 			return null;
 		});
@@ -433,8 +477,7 @@ describe("IdentityResource.eraseOrg — confirm guard", () => {
 
 	it("forwards AbortSignal to the underlying request", async () => {
 		const { http, calls } = makeHttp("/tmp/x", (method, p) => {
-			if (method === "GET" && p === "/agents") return [];
-			if (method === "GET" && p === "/org") return sampleOrg();
+			if (method === "GET" && p === "/whoami") return sampleWhoAmI();
 			if (method === "DELETE") return sampleErasure();
 			return null;
 		});
@@ -456,8 +499,7 @@ describe("IdentityResource.exportOrg", () => {
 	it("GETs /orgs/{orgId}/export and returns the array as-is", async () => {
 		const records = [{ type: "agent" }, { type: "message" }];
 		const { http, calls } = makeHttp("/tmp/x", (method, p) => {
-			if (method === "GET" && p === "/agents") return [];
-			if (method === "GET" && p === "/org") return sampleOrg();
+			if (method === "GET" && p === "/whoami") return sampleWhoAmI();
 			if (method === "GET" && p === `/orgs/${ORG_ID}/export`) return records;
 			return null;
 		});
@@ -472,8 +514,7 @@ describe("IdentityResource.exportOrg", () => {
 	it("parses NDJSON when the response comes back as a string", async () => {
 		const ndjson = '{"type":"agent"}\n{"type":"message"}\n';
 		const { http } = makeHttp("/tmp/x", (method, p) => {
-			if (method === "GET" && p === "/agents") return [];
-			if (method === "GET" && p === "/org") return sampleOrg();
+			if (method === "GET" && p === "/whoami") return sampleWhoAmI();
 			if (method === "GET" && p === `/orgs/${ORG_ID}/export`) return ndjson;
 			return null;
 		});
@@ -486,8 +527,7 @@ describe("IdentityResource.exportOrg", () => {
 
 	it("wraps a single-object response in an array", async () => {
 		const { http } = makeHttp("/tmp/x", (method, p) => {
-			if (method === "GET" && p === "/agents") return [];
-			if (method === "GET" && p === "/org") return sampleOrg();
+			if (method === "GET" && p === "/whoami") return sampleWhoAmI();
 			if (method === "GET" && p === `/orgs/${ORG_ID}/export`) return { type: "a" };
 			return null;
 		});
@@ -500,6 +540,83 @@ describe("IdentityResource.exportOrg", () => {
 });
 
 // ---------------------------------------------------------------------------
+// whoami — one principal-neutral route
+// ---------------------------------------------------------------------------
+
+describe("IdentityResource.whoami", () => {
+	it("answers an agent principal from GET /whoami alone, with the principal", async () => {
+		const { http, calls } = makeHttp("/tmp/x", () => ({
+			org: sampleOrg({ trust_tier: 2, agent_count: 1 }),
+			principal: { kind: "agent", branch: "main", agent_id: AGENT_ID },
+			agents: [sampleAgent()],
+		}));
+		const identity = new IdentityResource(http);
+
+		const me = await identity.whoami();
+
+		expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual(["GET /whoami"]);
+		expect(me.principal).toEqual({
+			kind: WhoAmIPrincipalKind.Agent,
+			branch: "main",
+			agent_id: AGENT_ID,
+		});
+		expect(me.org.id).toBe(ORG_ID);
+		expect(me.agents).toHaveLength(1);
+		expect(me.trust_tier).toBe(2);
+	});
+
+	it("test_whoami_when_the_server_names_another_org_than_the_profile_then_it_throws_org_mismatch", async () => {
+		const { http } = makeHttp("/tmp/x", () => sampleWhoAmI(), {
+			localOrgId: "33333333-3333-4333-8333-333333333333",
+		});
+		const identity = new IdentityResource(http);
+
+		const err = await identity.whoami().catch((e) => e);
+
+		expect(err).toBeInstanceOf(OrgMismatchError);
+		expect(err).toMatchObject({
+			localOrgId: "33333333-3333-4333-8333-333333333333",
+			serverOrgId: ORG_ID,
+		});
+	});
+
+	it("test_whoami_when_the_profile_org_matches_in_another_case_then_it_answers", async () => {
+		const { http } = makeHttp("/tmp/x", () => sampleWhoAmI(), {
+			localOrgId: ORG_ID.toUpperCase(),
+		});
+		const identity = new IdentityResource(http);
+
+		expect((await identity.whoami()).org.id).toBe(ORG_ID);
+	});
+
+	it("keeps the org fields an org principal saw before, with the principal added", async () => {
+		const { http } = makeHttp("/tmp/x", () => sampleWhoAmI());
+		const identity = new IdentityResource(http);
+
+		const me = await identity.whoami();
+
+		expect(me).toMatchObject({
+			org: { id: ORG_ID, name: "Acme", trust_tier: 1 },
+			agents: [],
+			trust_tier: 1,
+			principal: { kind: WhoAmIPrincipalKind.Org, branch: null, agent_id: null },
+		});
+	});
+
+	it("accepts a reader principal", async () => {
+		const { http } = makeHttp("/tmp/x", () => ({
+			...sampleWhoAmI(),
+			principal: { kind: "branch_reader", branch: "main" },
+		}));
+		const identity = new IdentityResource(http);
+
+		expect((await identity.whoami()).principal.kind).toBe(
+			WhoAmIPrincipalKind.BranchReader,
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Lazy org-ID cache
 // ---------------------------------------------------------------------------
 
@@ -507,10 +624,9 @@ describe("IdentityResource — lazy org-ID cache", () => {
 	it("calls whoami once, then reuses the cached ID across erase/export", async () => {
 		let orgCalls = 0;
 		const { http } = makeHttp("/tmp/x", (method, p) => {
-			if (method === "GET" && p === "/agents") return [];
-			if (method === "GET" && p === "/org") {
+			if (method === "GET" && p === "/whoami") {
 				orgCalls++;
-				return sampleOrg();
+				return sampleWhoAmI();
 			}
 			if (method === "DELETE" && p === `/orgs/${ORG_ID}`) return sampleErasure();
 			if (method === "GET" && p === `/orgs/${ORG_ID}/export`) return [];
@@ -521,7 +637,7 @@ describe("IdentityResource — lazy org-ID cache", () => {
 		await identity.exportOrg();
 		await identity.eraseOrg({ confirm: true });
 
-		// First exportOrg fetched /org once; second eraseOrg hits the cache.
+		// First exportOrg fetched /whoami once; second eraseOrg hits the cache.
 		expect(orgCalls).toBe(1);
 	});
 });

@@ -73,6 +73,15 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 			encryption_version: "mls-v1",
 			sender_signing_kid: "sig-kid-mls",
 		})),
+		prepareEscrowForSend: vi.fn(async () => "ESCROW-FP"),
+		postWithEscrowRetry: vi.fn(
+			async (
+				_actor: unknown,
+				_groupId: string,
+				fp: string,
+				post: (fp: string) => Promise<unknown>,
+			) => post(fp),
+		),
 		processMlsWelcomes: vi.fn(async () => undefined),
 		syncMlsGroup: vi.fn(async () => undefined),
 		fetchAgents: vi.fn(async () => [
@@ -104,13 +113,19 @@ interface Harness {
 	posts: string[];
 }
 
+interface BodyRecordingHarness extends Harness {
+	/** The body of every `POST /messages`, in order. */
+	bodies: Record<string, unknown>[];
+}
+
 /**
  * A send harness whose `/groups` lookup answers with one group in whatever MLS
  * shape the test needs, and which records every POST so a refusal can be shown
  * to have reached the wire zero times.
  */
-function makeHarness(overrides: GroupOverrides = {}): Harness {
+function makeHarness(overrides: GroupOverrides = {}): BodyRecordingHarness {
 	const posts: string[] = [];
+	const bodies: Record<string, unknown>[] = [];
 	const group = {
 		id: GROUP_ID,
 		name: "dev",
@@ -126,8 +141,9 @@ function makeHarness(overrides: GroupOverrides = {}): Harness {
 			get: async () => ({ items: [group] }),
 			post: async () => ({}),
 		}),
-		async post<T>(path: string): Promise<T> {
+		async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
 			posts.push(path);
+			bodies.push(body);
 			return {
 				id: "44444444-4444-4444-8444-444444444444",
 				conversation_id: "55555555-5555-4555-8555-555555555555",
@@ -141,7 +157,7 @@ function makeHarness(overrides: GroupOverrides = {}): Harness {
 			} as T;
 		},
 	} as unknown as SDKHttpClient;
-	return { messages: new MessagesResource(http), posts };
+	return { messages: new MessagesResource(http), posts, bodies };
 }
 
 const FABRICATED_SPELLING = "#dev@wrong.example";
@@ -271,6 +287,26 @@ describe("send branches on the send predicate", () => {
 		expect(core.encryptMlsGroupMessage).toHaveBeenCalledTimes(1);
 		expect(core.getOrCreateSenderKey).not.toHaveBeenCalled();
 		expect(guardCalls[0]?.serverSaysMls).toBe(true);
+	});
+
+	it("send_when_group_is_mls_latched_then_the_body_carries_the_drained_escrow_fp", async () => {
+		const h = makeHarness({ mls_group_id: "opaque-latch" });
+
+		await send(h);
+
+		expect(core.prepareEscrowForSend).toHaveBeenCalledTimes(1);
+		expect(core.postWithEscrowRetry).toHaveBeenCalledTimes(1);
+		expect(h.bodies[0]?.escrow_fp).toBe("ESCROW-FP");
+	});
+
+	it("send_when_group_uses_sender_keys_then_no_escrow_is_drained", async () => {
+		const h = makeHarness({ mls_group_id: null });
+
+		await send(h);
+
+		expect(core.prepareEscrowForSend).not.toHaveBeenCalled();
+		expect(core.postWithEscrowRetry).not.toHaveBeenCalled();
+		expect(h.bodies[0]).not.toHaveProperty("escrow_fp");
 	});
 
 	it("send_when_init_is_pending_never_makes_a_sender_key", async () => {

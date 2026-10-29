@@ -4,19 +4,14 @@
  */
 
 import {
-	encryptionPublicKeyToJWK,
-	generateAgentKeys,
-	generatePqKeyPair,
-	hasSpiffeEndpoint,
-	loadAgentKeys,
-	loadCredentials,
-	pqPublicKeyToJWK,
-	publishMlsKeyPackages,
-	saveAgentKeys,
-	saveCredentials,
-	savePqEncryptionKey,
-	signingPublicKeyToJWK,
+	OrgMismatchError,
+	agentCreateRequest,
+	loadCustody,
+	performKeyRotation,
+	persistCreatedAgent,
+	settleRotation,
 	verifyIdentitySpiffe,
+	verifyNewAgent,
 } from "@rine-network/core";
 import type { VerifyIdentityResult } from "@rine-network/core";
 import { parse, parseCursorPage } from "../api/adapters.js";
@@ -38,6 +33,8 @@ import type { AgentRead, AgentUuid, ErasureResult, OrgRead } from "../types.js";
 // ---------------------------------------------------------------------------
 
 export interface CreateAgentOptions {
+	/** The branch the agent is created under (default `main`). */
+	branch?: string;
 	human_oversight?: boolean;
 	unlisted?: boolean;
 	signal?: AbortSignal;
@@ -77,10 +74,6 @@ export type CreateAgentResult = AgentRead & {
 };
 
 export interface RotateKeysOptions {
-	signal?: AbortSignal;
-}
-
-export interface AddPostQuantumKeyOptions {
 	signal?: AbortSignal;
 }
 
@@ -128,120 +121,78 @@ export class IdentityResource {
 	constructor(private readonly http: SDKHttpClient) {}
 
 	/**
-	 * Fetch the current org identity, agent list, and trust tier.
+	 * Fetch the caller's org summary, principal and the agents it can see.
 	 *
-	 * Routes: `GET /agents` + `GET /org` — the server does not expose a
-	 * single `/agents/whoami` endpoint, so the SDK composes the `WhoAmI`
-	 * response client-side.
+	 * Route: `GET /whoami`. Every principal kind is answered, each inside what
+	 * it may read: an org principal sees the whole org, a branch or agent
+	 * principal only its own scope.
+	 *
+	 * Throws {@link OrgMismatchError} when the answer names another org than the
+	 * one the local profile was created under: a misconfigured profile or a lying
+	 * server, and either way nothing in the answer is trusted.
 	 */
 	async whoami(opts?: { signal?: AbortSignal }) {
-		const agentsRaw = await this.http.get<unknown>("/agents", {
+		const raw = await this.http.get<unknown>("/whoami", {
 			signal: opts?.signal,
 			operation: "whoami",
 		});
-		const agentsList = unwrapAgentsList(agentsRaw);
-		const agents = agentsList.map((a) => parse(AgentReadSchema, a));
-		const orgRaw = await this.http.get<unknown>("/org", {
-			signal: opts?.signal,
-			operation: "whoami",
-		});
-		const org = parse(OrgReadSchema, orgRaw);
-		return parse(WhoAmISchema, {
-			org,
-			agents,
-			trust_tier: org.trust_tier ?? 0,
-		});
+		const who = parse(WhoAmISchema, raw);
+		const local = this.http.localOrgId;
+		if (local !== undefined && who.org.id.toLowerCase() !== local.toLowerCase()) {
+			throw new OrgMismatchError(local, who.org.id);
+		}
+		return who;
 	}
 
 	/**
-	 * Create a new agent with locally generated E2EE keypairs.
+	 * Create a new agent whose keys are derived from the org's custody.
 	 *
 	 * Flow:
-	 *   1. Generate Ed25519 + X25519 keypairs via rine-core `generateAgentKeys()`.
-	 *   2. POST `/agents` with `{name, human_oversight, unlisted, signing_public_key,
-	 *      encryption_public_key}` (public keys as JWKs). The server's `AgentCreate`
-	 *      schema is `extra="forbid"`, so no other fields may be sent on creation.
-	 *   3. Persist private keys under `{configDir}/keys/{agentId}/` via
-	 *      rine-core `saveAgentKeys()` so the new agent can immediately participate
-	 *      in E2EE send/receive without any manual key setup.
+	 *   1. Load the branch's custody from the owner dir or the runtime config dir
+	 *      and derive the agent's generation-0 keys under a client-minted id.
+	 *   2. POST `/agents` with the id, the key material and the branch-signed
+	 *      certificate (the same body builder as `rotateKeys`).
+	 *   3. Save the leaf keys under `{configDir}/keys/{agentId}/`, publish MLS
+	 *      KeyPackages and name the agent in a profile if the profile name is free.
 	 *
-	 * Partial failure: if the POST succeeds but `saveAgentKeys` throws, the
-	 * server-side agent exists but the caller has no private keys — surfaced
-	 * as the raw I/O error. Callers must treat this as a partial failure.
+	 * The keys are derived, so a crash between the POST and the save loses
+	 * nothing: `rine org recover` rebuilds the files from the phrase.
 	 */
 	async createAgent(
 		name: string,
 		opts?: CreateAgentOptions,
 	): Promise<CreateAgentResult> {
-		const { signal, verifyIdentity, svid, ...body } = opts ?? {};
+		const { signal, verifyIdentity, svid, branch, human_oversight, unlisted } =
+			opts ?? {};
 		requireConfigDir(this.http.configDir, "createAgent");
-		const keys = generateAgentKeys();
-		const agentBody: Record<string, unknown> = {
+		const custody = loadCustody(this.http.custodyDirs(), branch ?? "main");
+		const mintedId = crypto.randomUUID();
+		const { body, keys } = agentCreateRequest(custody, mintedId, {
 			name,
-			...body,
-			signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-			encryption_public_key: encryptionPublicKeyToJWK(
-				keys.encryption.publicKey,
-			),
-		};
-		if (keys.pqEncryption) {
-			agentBody.pq_encryption_public_key = pqPublicKeyToJWK(
-				keys.pqEncryption.publicKey,
-			);
-		}
-		const raw = await this.http.post<unknown>(
-			"/agents",
-			agentBody,
-			{ signal, operation: "createAgent" },
-		);
+			humanOversight: human_oversight,
+			unlisted,
+		});
+		const raw = await this.http.post<unknown>("/agents", body, {
+			signal,
+			operation: "createAgent",
+		});
 		const agent = parse(AgentReadSchema, raw);
-		saveAgentKeys(this.http.configDir, agent.id, keys);
-
-		// Publish an initial batch of MLS KeyPackages so the agent can be added to
-		// MLS groups from birth (parity with rine-core's performAgentCreation —
-		// without this, a freshly SDK-created agent has no KeyPackages and any MLS
-		// group invite fails 409 "No key packages available"). Best-effort: a
-		// failure must never abort agent creation — the agent still works on
-		// sender-key groups and KeyPackages can be republished later.
-		try {
-			const core = this.http.getCoreHttpClient({ signal });
-			await publishMlsKeyPackages(this.http.configDir, agent.id, core);
-		} catch {
-			// non-fatal — agent is usable; KeyPackages can be published later
-		}
-
-		// Persist poll_url to credentials if returned by server.
-		if (agent.poll_url) {
-			try {
-				const creds = loadCredentials(this.http.configDir);
-				if (creds.default) {
-					creds.default.poll_url = agent.poll_url;
-					saveCredentials(this.http.configDir, creds);
-				}
-			} catch {
-				// Non-fatal — mirrors rine-core's performAgentCreation.
-			}
-		}
-
-		// Auto-verify hook (parity with rine-core's performAgentCreation): run
-		// SPIFFE verification when explicitly requested, when a SVID is supplied,
-		// or when a Workload API endpoint is present. A verification failure must
-		// never undo the already-created agent — capture it in `identityError`.
-		if (verifyIdentity || svid || hasSpiffeEndpoint()) {
-			try {
-				const identity = await this.verifyIdentity(agent.id as AgentUuid, {
-					svid,
-					signal,
-				});
-				return { ...agent, identity };
-			} catch (err) {
-				return {
-					...agent,
-					identityError: err instanceof Error ? err.message : String(err),
-				};
-			}
-		}
-		return agent;
+		await persistCreatedAgent(
+			this.http.getCoreHttpClient({ signal }),
+			this.http.custodyDirs(),
+			this.http.profile,
+			custody,
+			agent,
+			mintedId,
+			keys,
+		);
+		return {
+			...agent,
+			...(await verifyNewAgent(this.spiffePoster(signal), agent.id, {
+				verifyIdentity,
+				svid,
+			})),
+		};
 	}
 
 	/**
@@ -262,16 +213,21 @@ export class IdentityResource {
 		opts?: VerifyIdentityOptions,
 	): Promise<VerifyIdentityResult> {
 		return verifyIdentitySpiffe(
-			{
-				post: (path, requestBody) =>
-					this.http.post<unknown>(path, requestBody, {
-						signal: opts?.signal,
-						operation: "verifyIdentity",
-					}),
-			},
+			this.spiffePoster(opts?.signal),
 			agentId,
 			{ svid: opts?.svid, log: opts?.log },
 		);
+	}
+
+	/** Bridges the SDK client to core's SPIFFE flow, pinning the telemetry label. */
+	private spiffePoster(signal?: AbortSignal) {
+		return {
+			post: (path: string, requestBody?: unknown) =>
+				this.http.post<unknown>(path, requestBody, {
+					signal,
+					operation: "verifyIdentity",
+				}),
+		};
 	}
 
 	async listAgents(opts?: { includeRevoked?: boolean }) {
@@ -304,72 +260,32 @@ export class IdentityResource {
 	}
 
 	/**
-	 * Rotate this agent's signing + encryption keypairs.
+	 * Rotate this agent to its next key generation and move its seats to it.
 	 *
-	 * Route: `POST /agents/{id}/keys`.
-	 *
-	 * Generates fresh Ed25519 + X25519 keypairs locally, uploads the public
-	 * halves to the server (JWK-encoded), then overwrites the on-disk private
-	 * keys via `saveAgentKeys()`.
-	 *
-	 * Key rotation is visible to future peers immediately; messages encrypted
-	 * to the previous encryption key can still be decrypted as long as the
-	 * caller retains a copy of the old private key out-of-band (the SDK does
-	 * not keep a history of rotated-out keys).
-	 *
-	 * Partial failure: if the POST succeeds but `saveAgentKeys` throws mid-write,
-	 * the server has the new public keys while the on-disk state may be
-	 * inconsistent (`saveAgentKeys` writes signing.key then encryption.key as
-	 * two separate file ops, not atomically). Senders will encrypt to the new
-	 * keys the server advertises but the client may still hold the old private
-	 * half — silent decryption failure. Track as rine-core follow-up.
+	 * Route: `GET /agents/{id}/keys` (branch and current generation), then
+	 * `POST /agents/{id}/keys` with the next generation's keys and a fresh
+	 * certificate. The keys derive from the org's custody; the leaf files are
+	 * rewritten after the server accepts the body. Only that step can throw:
+	 * `key_packages` and `group_seats` report what this host managed to move.
 	 */
 	async rotateKeys(agentId: AgentUuid, opts?: RotateKeysOptions) {
 		requireConfigDir(this.http.configDir, "rotateKeys");
-		const keys = generateAgentKeys();
-		const keysBody: Record<string, unknown> = {
-			signing_public_key: signingPublicKeyToJWK(keys.signing.publicKey),
-			encryption_public_key: encryptionPublicKeyToJWK(
-				keys.encryption.publicKey,
-			),
-		};
-		if (keys.pqEncryption) {
-			keysBody.pq_encryption_public_key = pqPublicKeyToJWK(
-				keys.pqEncryption.publicKey,
-			);
-		}
-		const raw = await this.http.post<unknown>(
-			`/agents/${agentId}/keys`,
-			keysBody,
-			{ signal: opts?.signal, operation: "rotateKeys" },
+		const call = { signal: opts?.signal, operation: "rotateKeys" } as const;
+		const raw = await performKeyRotation(
+			{
+				get: (path) => this.http.get<unknown>(path, call),
+				post: (path, requestBody) =>
+					this.http.post<unknown>(path, requestBody, call),
+			},
+			this.http.custodyDirs(),
+			agentId,
 		);
-		const agent = parse(AgentReadSchema, raw);
-		saveAgentKeys(this.http.configDir, agentId, keys);
-		return agent;
-	}
-
-	async addPostQuantumKey(agentId: AgentUuid, opts?: AddPostQuantumKeyOptions) {
-		requireConfigDir(this.http.configDir, "addPostQuantumKey");
-		const existingKeys = loadAgentKeys(this.http.configDir, agentId);
-		if (existingKeys.pqEncryption) {
-			throw new RineError(
-				`Agent ${agentId} already has a post-quantum key. Use rotateKeys() to replace all keys.`,
-			);
-		}
-		const pqKeyPair = generatePqKeyPair();
-		const keysBody: Record<string, unknown> = {
-			signing_public_key: signingPublicKeyToJWK(existingKeys.signing.publicKey),
-			encryption_public_key: encryptionPublicKeyToJWK(existingKeys.encryption.publicKey),
-			pq_encryption_public_key: pqPublicKeyToJWK(pqKeyPair.publicKey),
-		};
-		const raw = await this.http.post<unknown>(
-			`/agents/${agentId}/keys`,
-			keysBody,
-			{ signal: opts?.signal, operation: "addPostQuantumKey" },
-		);
-		const agent = parse(AgentReadSchema, raw);
-		savePqEncryptionKey(this.http.configDir, agentId, pqKeyPair);
-		return agent;
+		const settlement = await settleRotation({
+			configDir: this.http.configDir,
+			agentId,
+			client: this.http.getCoreHttpClient({ signal: opts?.signal }),
+		});
+		return { ...parse(AgentReadSchema, raw), ...settlement };
 	}
 
 	async getAgentCard(agentId: AgentUuid) {
@@ -523,23 +439,6 @@ function requireConfigDir(configDir: string, method: string): void {
 				"under {configDir}/keys/{agentId}/ instead of the current working directory.",
 		);
 	}
-}
-
-/**
- * `GET /agents` sometimes returns a bare array (paginated list default) and
- * sometimes a `{items: [...]}` envelope depending on version. Accept both.
- */
-function unwrapAgentsList(raw: unknown): unknown[] {
-	if (Array.isArray(raw)) return raw;
-	if (
-		typeof raw === "object" &&
-		raw !== null &&
-		"items" in raw &&
-		Array.isArray((raw as { items: unknown }).items)
-	) {
-		return (raw as { items: unknown[] }).items;
-	}
-	return [];
 }
 
 function toAgentCardBody(card: AgentCardInput): Record<string, unknown> {

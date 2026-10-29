@@ -6,6 +6,7 @@
  * crypto, just `.parse()` round-trips.
  */
 
+import * as fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
 	AgentReadSchema,
@@ -13,6 +14,8 @@ import {
 	GroupMemberSchema,
 	GroupReadSchema,
 	MessageType,
+	WhoAmIPrincipalKind,
+	WhoAmISchema,
 } from "./types.js";
 
 // ---------------------------------------------------------------------------
@@ -81,7 +84,7 @@ describe("DecryptedMessageSchema.plaintext", () => {
 		to_agent_id: "55555555-5555-4555-8555-555555555555",
 		type: "rine.v1.task_request",
 		encrypted_payload: "base64-opaque",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		created_at: "2026-04-11T12:00:00Z",
 	};
 
@@ -169,8 +172,8 @@ describe("GroupReadSchema.conversation_id", () => {
 // `GroupMember` from, so a field missing here stops arriving on three surfaces
 // at once, silently, with nothing thrown.
 //
-// What the two fields answer is one question the org-scoped group list could
-// never answer before: `GET /groups` lists every group ANY agent of the org is
+// What the two fields answer is one question the credential-scoped group list could
+// never answer before: for an org key `GET /groups` lists every group ANY agent of the org is
 // in, so a row on it was not proof the acting agent may act in that group.
 // `member_agent_ids` names which of the caller's own agents are seated in the
 // group; `is_own_org` marks which roster rows are the caller's own.
@@ -254,4 +257,56 @@ describe("GroupMemberSchema.is_own_org", () => {
 		const parsed = GroupMemberSchema.parse(baseMember);
 		expect(parsed.is_own_org).toBe(false);
 	});
+});
+
+// ---------------------------------------------------------------------------
+// WhoAmIPrincipalKind — the closed set the server names
+// ---------------------------------------------------------------------------
+
+describe("WhoAmIPrincipalKind", () => {
+	it("test_whoami_kinds_when_replaying_the_servers_golden_then_the_enum_names_exactly_those_kinds", () => {
+		// The monorepo's Python SDK holds the golden the server's contract test
+		// regenerates (`tests/contract/test_contract_identity.py`); a kind the
+		// server adds or drops fails here instead of in a user's `whoami()`.
+		const golden = JSON.parse(
+			fs.readFileSync(
+				new URL(
+					"../../rine-sdk/tests/contract/fixtures/whoami_kinds.json",
+					import.meta.url,
+				),
+				"utf-8",
+			),
+		) as { body: { kinds: string[] } };
+
+		expect([...Object.values(WhoAmIPrincipalKind)].sort()).toEqual(
+			golden.body.kinds,
+		);
+	});
+
+	it.each([
+		["whoami_200_org", WhoAmIPrincipalKind.Org],
+		["whoami_200_branch", WhoAmIPrincipalKind.Branch],
+		["whoami_200_agent", WhoAmIPrincipalKind.Agent],
+		["whoami_200_org_reader", WhoAmIPrincipalKind.OrgReader],
+		["whoami_200_branch_reader", WhoAmIPrincipalKind.BranchReader],
+	])(
+		"test_whoami_schema_when_replaying_the_golden_%s_then_it_parses_as_that_kind",
+		(name, kind) => {
+			const golden = JSON.parse(
+				fs.readFileSync(
+					new URL(
+						`../../rine-sdk/tests/contract/fixtures/${name}.json`,
+						import.meta.url,
+					),
+					"utf-8",
+				),
+			) as { body: { org: { trust_tier: number } } };
+
+			const who = WhoAmISchema.parse(golden.body);
+
+			expect(who.principal.kind).toBe(kind);
+			expect(who.trust_tier).toBe(golden.body.org.trust_tier);
+			expect(who.agents).toHaveLength(1);
+		},
+	);
 });

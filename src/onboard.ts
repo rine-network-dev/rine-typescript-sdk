@@ -1,13 +1,15 @@
 /**
  * Standalone org registration.
  *
- * Module-level function (not a client method) because credentials don't
- * exist yet at registration time. Delegates to rine-core's
- * `performRegistration` for the PoW + credential persistence flow.
+ * Module-level function (not a client method) because no identity
+ * exists yet at registration time. Delegates to rine-core's
+ * `performRegistration` for the PoW, root-key minting and persistence flow.
  */
 
 import {
+	DEFAULT_PROFILE,
 	performRegistration,
+	resolveOwnerDir,
 	validateSlug,
 } from "@rine-network/core";
 import {
@@ -27,8 +29,15 @@ export { validateSlug };
 export interface RegisterOptions {
 	/** API base URL (e.g. "https://rine.network"). */
 	apiUrl: string;
-	/** Path to the rine config directory for credential persistence. */
+	/** The runtime config dir (profiles, agent keys, token cache). */
 	configDir: string;
+	/**
+	 * The owner dir that receives `root.key` and the recovery phrase. Defaults to
+	 * `$RINE_OWNER_DIR` or `~/.config/rine-owner/`; refused inside a git checkout.
+	 */
+	ownerDir?: string;
+	/** Profile name for the org profile (default `default`). */
+	profile?: string;
 	/** Registration email address. */
 	email: string;
 	/** Organisation slug (validated client-side via `validateSlug`). */
@@ -42,7 +51,10 @@ export interface RegisterOptions {
 /** Returned on successful registration. */
 export interface RegistrationResult {
 	orgId: string;
-	clientId: string;
+	/** The 8 org verification words. Safe to print: they are not the phrase. */
+	orgWords: string;
+	/** Where the 24-word recovery phrase was written. The phrase is never returned. */
+	phrasePath: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -52,11 +64,12 @@ export interface RegistrationResult {
 /**
  * Register a new org on the Rine network.
  *
- * Solves the RSA time-lock proof-of-work, saves credentials to
- * `{configDir}/credentials.json`, and caches the initial OAuth token.
+ * Mints the org root key, solves the RSA time-lock proof-of-work, registers
+ * the org's public keys, and writes `root.key`, the recovery phrase and the org
+ * profile to the owner dir. The phrase is the only copy: back it up.
  *
  * @throws {ValidationError} If the slug fails client-side validation.
- * @throws {ConflictError} If the email or slug is already registered.
+ * @throws {ConflictError} If the email, slug or org id is already registered.
  * @throws {RateLimitError} On 429 from the server.
  * @throws {RineError} On PoW challenge expiry or other failures.
  */
@@ -70,12 +83,16 @@ export async function register(opts: RegisterOptions): Promise<RegistrationResul
 	try {
 		const result = await performRegistration(
 			opts.apiUrl,
-			opts.configDir,
-			"default",
+			{ configDir: opts.configDir, ownerDir: opts.ownerDir ?? resolveOwnerDir() },
+			opts.profile ?? DEFAULT_PROFILE,
 			{ email: opts.email, slug: opts.slug, name: opts.name },
 			opts.onProgress,
 		);
-		return { orgId: result.org_id, clientId: result.client_id };
+		return {
+			orgId: result.org_id,
+			orgWords: result.org_words,
+			phrasePath: result.phrase_path,
+		};
 	} catch (err) {
 		// Map rine-core's generic Error messages to SDK typed errors.
 		if (err instanceof Error) {

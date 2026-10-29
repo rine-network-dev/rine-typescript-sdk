@@ -1,5 +1,5 @@
 /**
- * How `RineError` recognises the two refusals `rine-core` mints on the SDK's
+ * How `RineError` recognises the refusals `rine-core` mints on the SDK's
  * behalf.
  *
  * `MlsDowngradeError` and `MlsInitInFlightError` are thrown out of
@@ -23,6 +23,16 @@
  * would rather not name the class, and it is the only thing that answers true
  * for a refusal crossing a package boundary the bundler duplicated.
  *
+ * 🔴 `PrincipalRevokedError` is the one that exists twice: the SDK declares a
+ * subclass of its `AuthenticationError`, and the operations the SDK delegates to
+ * `rine-core` raise core's class, which cannot extend that one. A catch of
+ * `RineError` holds for both, and `isPrincipalRevokedError` is the predicate
+ * that answers true for either.
+ *
+ * 🔴 `EscrowGapError`, `OrgMismatchError` and `AgentIdMismatchError` are the
+ * last three. Their Python twins are `CryptoError`s, so a catch of `RineError`
+ * around a group send, `whoami()` or an agent create holds on both stacks.
+ *
  * 🔴 The base-only widening is what keeps this safe. `isRineErrorInstance`
  * answers true for a core-minted refusal when the class asked about IS
  * `RineError`, and never when it is a subclass — otherwise
@@ -31,9 +41,13 @@
  */
 
 import {
+	isAgentIdMismatchError,
+	isEscrowGapError,
 	isGroupIdentityMismatchError,
 	isMlsDowngradeError,
 	isMlsInitInFlightError,
+	isOrgMismatchError,
+	isPrincipalRevokedError,
 } from "@rine-network/core";
 
 /** True for a refusal `rine-core` minted, matched on its stable code. */
@@ -41,7 +55,11 @@ function isCoreMintedRefusal(value: unknown): boolean {
 	return (
 		isMlsInitInFlightError(value) ||
 		isMlsDowngradeError(value) ||
-		isGroupIdentityMismatchError(value)
+		isGroupIdentityMismatchError(value) ||
+		isEscrowGapError(value) ||
+		isOrgMismatchError(value) ||
+		isAgentIdMismatchError(value) ||
+		isPrincipalRevokedError(value)
 	);
 }
 

@@ -11,11 +11,16 @@
  */
 
 import {
+	PrincipalRevokedError as CorePrincipalRevokedError,
+	scopeOfRevokedCode,
+} from "@rine-network/core";
+import {
 	AuthenticationError,
 	AuthorizationError,
 	ConflictError,
 	InternalServerError,
 	NotFoundError,
+	PrincipalRevokedError,
 	RateLimitError,
 	RineApiError,
 	ServiceUnavailableError,
@@ -60,7 +65,7 @@ export function raiseForStatus(
 	raw?: unknown,
 	code?: string,
 ): never {
-	const err = errorForStatus(status, detail, raw);
+	const err = errorForStatus(status, detail, raw, code);
 	// Carried so a caller can branch on WHICH refusal this is — two 403s on the
 	// same route mean different things (`not_in_electorate` vs a plain
 	// membership refusal) and the only alternative is matching on the sentence.
@@ -73,7 +78,13 @@ function errorForStatus(
 	status: number,
 	detail: string,
 	raw?: unknown,
+	code?: string,
 ): RineApiError {
+	// A bearer route names a revoked principal in the error code, and only a 401
+	// does; the token mint names it in `reason`, which the SDK's token path maps
+	// on its own.
+	const scope = status === 401 ? scopeOfRevokedCode(code) : undefined;
+	if (scope !== undefined) return new PrincipalRevokedError(scope, detail, raw);
 	if (status === 429) {
 		// RateLimitError has an extra retryAfter field parsed from the response headers
 		const retryAfter = (raw as Response | undefined)?.headers?.get(
@@ -86,6 +97,22 @@ function errorForStatus(
 	const cls = STATUS_MAP.get(status);
 	if (cls) return new cls(detail, raw);
 	return new RineApiError(status, detail, raw);
+}
+
+/**
+ * The SDK's own error for a revoked-principal refusal that `rine-core` raised from
+ * the token mint, so a request the SDK makes itself raises one class whichever
+ * route refused. Any other error comes back as it is. The parsed body is not
+ * copied: the SDK's `RineApiError` has no `body` member.
+ *
+ * Operations the SDK delegates to `rine-core` raise core's own class, like every
+ * other core refusal; `isPrincipalRevokedError` answers true for both.
+ */
+export function sdkErrorFromCore(error: unknown): unknown {
+	if (!(error instanceof CorePrincipalRevokedError)) return error;
+	const revoked = new PrincipalRevokedError(error.scope, error.detail, error.raw);
+	if (error.code !== undefined) revoked.code = error.code;
+	return revoked;
 }
 
 /**

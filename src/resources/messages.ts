@@ -17,18 +17,19 @@ import {
 	assertNoMlsDowngrade,
 	classifyReference,
 	encryptGroupMessage,
-	encryptMessage,
 	encryptMlsGroupMessage,
 	fetchAgents,
-	fetchRecipientKeys,
 	getOrCreateSenderKey,
 	isNoMlsStateError,
 	normalizeHandle,
+	postWithEscrowRetry,
+	prepareEscrowForSend,
 	processMlsWelcomes,
 	readableGroupById,
 	resolveAgent,
 	resolveRecipient,
 	resolveToUuid,
+	sealForAgent,
 	syncMlsGroup,
 	withPeekHeader,
 } from "@rine-network/core";
@@ -162,7 +163,7 @@ export class MessagesResource {
 			// fetched again (`ResolveOptions.agents`): `fetchAgents` is uncached by
 			// design and the bare-recipient collision guard reads the same list.
 			// `extraHeaders` is deliberately NOT passed — the resolve legs are
-			// org-scoped reads and `X-Rine-Agent` goes on `POST /messages` alone,
+			// key-scoped reads and `X-Rine-Agent` goes on `POST /messages` alone,
 			// so adding it here would change a request trace nothing about this
 			// send needs changed.
 			const recipient = await resolveRecipient(
@@ -172,7 +173,7 @@ export class MessagesResource {
 				{ agents },
 			);
 			warnGroupIdRecipient(recipient);
-			const body = await this.buildSendBody(
+			const { body, escrowGroupId } = await this.buildSendBody(
 				core,
 				senderId,
 				recipient.kind === "group"
@@ -187,14 +188,26 @@ export class MessagesResource {
 				opts,
 			);
 
-			const raw = await this.http.post<unknown>("/messages", body, {
-				signal: op.signal,
-				operation: "send",
-				extraHeaders: mergeHeaders(
-					idempotencyHeader(opts.idempotencyKey),
-					actingAgentHeader(opts.agent, senderId),
-				),
-			});
+			const post = (sendBody: Record<string, unknown>) =>
+				this.http.post<unknown>("/messages", sendBody, {
+					signal: op.signal,
+					operation: "send",
+					extraHeaders: mergeHeaders(
+						idempotencyHeader(opts.idempotencyKey),
+						actingAgentHeader(opts.agent, senderId),
+					),
+				});
+			// An mls-v1 post is refused with 409 `escrow_missing` until this
+			// epoch's escrow is uploaded; it is retried once after an upload.
+			const raw =
+				escrowGroupId === undefined
+					? await post(body)
+					: await postWithEscrowRetry(
+							this.escrowActor(core, senderId),
+							escrowGroupId,
+							String(body.escrow_fp),
+							(escrowFp) => post({ ...body, escrow_fp: escrowFp }),
+						);
 			// `parse<T>(schema, data)` erases the precise Zod output type
 			// through its `z.ZodType<T>` parameter — the loose inferred shape
 			// leaves `metadata` optional, even though `MessageReadSchema`'s
@@ -486,20 +499,18 @@ export class MessagesResource {
 			}
 
 			// 4. Encrypt to the original sender's public encryption key.
-			const recipientKeys = await fetchRecipientKeys(core, recipientId);
-			const encrypted = await encryptMessage(
+			const encrypted = await sealForAgent(
+				core,
 				this.http.configDir,
-				senderId,
-				recipientKeys.encryption,
+				{ senderAgentId: senderId, recipientAgentId: recipientId },
 				payload,
-				recipientKeys.pqEncryption,
 			);
 
 			const body: Record<string, unknown> = {
 				type: opts.type ?? DEFAULT_REPLY_TYPE,
 				content_type: opts.contentType ?? "application/json",
 				// `...encrypted` carries `self_encrypted_payload` (the sender
-				// self-seal from `encryptMessage`) onto the wire
+				// self-seal from `sealForAgent`) onto the wire
 				// for 1:1 replies — there is no body whitelist that would strip
 				// it. The server persists it so the sender can later
 				// self-read its own reply via `thread()`.
@@ -571,7 +582,7 @@ export class MessagesResource {
 			const senderId = await this.resolveSenderId(core, opts.agent);
 
 			// Build the full encrypted body — same as send() uses.
-			const body = await this.buildSendBody(
+			const { body } = await this.buildSendBody(
 				core,
 				senderId,
 				await this.syncSendTarget(core, to),
@@ -641,7 +652,7 @@ export class MessagesResource {
 	 * reaches both namespaces, and this verb used to hand every one of them to
 	 * `resolveToUuid` — so a group's own id was HPKE-sealed to an agent that does
 	 * not exist and came back the server's bare `404: Agent not found`, on the
-	 * five published surfaces that wrap this SDK. One org-scoped
+	 * five published surfaces that wrap this SDK. One key-scoped
 	 * {@link readableGroupById} answers it, the same read `send` pays through
 	 * `resolveRecipient`'s id rung and the same one `rine-mcp` pays through its
 	 * ladder, and a 404/403 miss falls through to the agent rung below.
@@ -653,7 +664,7 @@ export class MessagesResource {
 	 * `RineClient._a_group_the_sync_endpoint_refuses`.
 	 *
 	 * `extraHeaders` is deliberately not passed, for the reason {@link send}
-	 * gives at its own resolve: the probe is an org-scoped read, and
+	 * gives at its own resolve: the probe is a key-scoped read, and
 	 * `X-Rine-Agent` goes on `POST /messages/sync` alone.
 	 *
 	 * @throws {Error} The UUID names a group this org may read.
@@ -680,7 +691,7 @@ export class MessagesResource {
 	 *
 	 * - {@link SendTarget} `group` → `getOrCreateSenderKey` → `encryptGroupMessage`
 	 *   (or the MLS branch) → body carries `to_handle` + the group envelope.
-	 * - {@link SendTarget} `agent` → HPKE-seal with `encryptMessage` → body
+	 * - {@link SendTarget} `agent` → HPKE-seal with `sealForAgent` → body
 	 *   carries `to_agent_id` + the 1:1 envelope.
 	 *
 	 * 🔴 It no longer decides WHICH of the two a recipient is, and that is the
@@ -706,7 +717,7 @@ export class MessagesResource {
 		target: SendTarget,
 		payload: unknown,
 		opts: SendOptions,
-	): Promise<Record<string, unknown>> {
+	): Promise<{ body: Record<string, unknown>; escrowGroupId?: string }> {
 		const base: Record<string, unknown> = {
 			type: opts.type ?? DEFAULT_SEND_TYPE,
 			content_type: opts.contentType ?? "application/json",
@@ -750,16 +761,20 @@ export class MessagesResource {
 				// be told a group it never named was initialising.
 				if (group.mls_group_id === null)
 					throw new MlsInitInFlightError(groupHandle);
-				const result = await this.encryptMlsWithRecovery(
+				const { result, escrowFp } = await this.encryptMlsWithRecovery(
 					core,
 					senderId,
 					group.id,
 					payload,
 				);
 				return {
-					...base,
-					to_handle: groupHandle,
-					...result,
+					body: {
+						...base,
+						to_handle: groupHandle,
+						...result,
+						escrow_fp: escrowFp,
+					},
+					escrowGroupId: group.id,
 				};
 			}
 
@@ -783,11 +798,7 @@ export class MessagesResource {
 				state,
 				payload,
 			);
-			return {
-				...base,
-				to_handle: groupHandle,
-				...result,
-			};
+			return { body: { ...base, to_handle: groupHandle, ...result } };
 		}
 
 		// 1:1 HPKE path. The id was resolved by whichever door the calling verb
@@ -795,24 +806,33 @@ export class MessagesResource {
 		// `sendAndWait`); both reach `resolveToUuid`, which accepts a UUID
 		// (pass-through) or an agent handle (WebFinger lookup).
 		const recipientId = target.agentId;
-		const recipientKeys = await fetchRecipientKeys(core, recipientId);
-		const encrypted = await encryptMessage(
+		const encrypted = await sealForAgent(
+			core,
 			this.http.configDir,
-			senderId,
-			recipientKeys.encryption,
+			{ senderAgentId: senderId, recipientAgentId: recipientId },
 			payload,
-			recipientKeys.pqEncryption,
 		);
-		return {
+		const body = {
 			...base,
 			to_agent_id: recipientId,
 			// `...encrypted` carries `self_encrypted_payload` (the sender
-			// self-seal from `encryptMessage`) on the 1:1 send
+			// self-seal from `sealForAgent`) on the 1:1 send
 			// path. Group sends never reach here — `encryptGroupMessage`/
 			// `encryptMlsGroupMessage` return an `EncryptResult` with no
 			// `self_encrypted_payload`, so their `...result` spread carries
 			// none (groups self-read via the key cache, not the self-blob).
 			...encrypted,
+		};
+		return { body };
+	}
+
+	/** The acting agent as the escrow drain reaches the server. */
+	private escrowActor(core: CoreHttpClient, senderId: string) {
+		return {
+			configDir: this.http.configDir,
+			agentId: senderId,
+			client: core,
+			extraHeaders: { [ACTING_AGENT_HEADER]: senderId },
 		};
 	}
 
@@ -822,10 +842,10 @@ export class MessagesResource {
 	 * 🔴 **The pre-sync is a correctness step, not a nicety.** A member sends at
 	 * whatever epoch its local state stands on, and a message sealed at a stale
 	 * epoch is one every member who joined after that epoch can never open. This
-	 * SDK was the only one of the three that did not do it — the CLI
-	 * (`commands/messages.ts`) and the Python SDK (`_mls/messages.py`
-	 * `_sync_quietly`) both have, which is why an agent sending through this SDK
-	 * could sit twenty-five commits behind a group it had joined AND sent into.
+	 * SDK was the only one of the three that did not do it — the CLI (through
+	 * rine-core's `sealAndPostMlsGroupMessage`, `mls-group-send.ts`) and the
+	 * Python SDK (`_mls/messages.py` `_sync_quietly`) both have, which is why an
+	 * agent sending through this SDK could sit twenty-five commits behind a group it had joined AND sent into.
 	 * Failures are swallowed: the recovery below answers the one that matters
 	 * (no local state at all), and every other failure leaves the send exactly
 	 * where it would have been.
@@ -840,17 +860,33 @@ export class MessagesResource {
 		senderId: string,
 		groupId: string,
 		payload: unknown,
-	): Promise<Awaited<ReturnType<typeof encryptMlsGroupMessage>>> {
+	): Promise<{
+		result: Awaited<ReturnType<typeof encryptMlsGroupMessage>>;
+		escrowFp: string;
+	}> {
 		await syncMlsGroup(this.http.configDir, senderId, groupId, core, {
 			[ACTING_AGENT_HEADER]: senderId,
 		}).catch(() => {});
-		try {
-			return await encryptMlsGroupMessage(
+		// The server refuses an mls-v1 send that does not name the fork
+		// fingerprint of the sender's epoch, and the escrow is drained BEFORE the
+		// encrypt: a drain that cannot run must not leave a spent ratchet
+		// generation and a self-read entry for a message that was never posted,
+		// and the fingerprint must name the epoch the ciphertext is built for.
+		const attempt = async () => {
+			const escrowFp = await prepareEscrowForSend(
+				this.escrowActor(core, senderId),
+				groupId,
+			);
+			const result = await encryptMlsGroupMessage(
 				this.http.configDir,
 				senderId,
 				groupId,
 				payload,
 			);
+			return { result, escrowFp };
+		};
+		try {
+			return await attempt();
 		} catch (err) {
 			// The predicate rine-core owns, not a copy of its message text.
 			if (isNoMlsStateError(err)) {
@@ -867,12 +903,7 @@ export class MessagesResource {
 				await syncMlsGroup(this.http.configDir, senderId, groupId, core, {
 					[ACTING_AGENT_HEADER]: senderId,
 				});
-				return await encryptMlsGroupMessage(
-					this.http.configDir,
-					senderId,
-					groupId,
-					payload,
-				);
+				return await attempt();
 			}
 			throw err;
 		}
@@ -1017,7 +1048,7 @@ interface OpScope {
  * `MessageRead` — there is no result slot of ours to hang a key on the way
  * `@rine-network/mcp` can. The SENTENCE is this surface's own and is
  * deliberately not hoisted into `@rine-network/core`
- * (`rine-cli/src/commands/messages.ts::groupIdRecipientNote` records why), and
+ * (`rine-cli/src/commands/messages-send-target.ts::groupIdRecipientNote` records why), and
  * it quotes the caller's spelling and the resolved handle, nothing else.
  */
 function warnGroupIdRecipient(recipient: RecipientTarget): void {
@@ -1038,7 +1069,7 @@ function idempotencyHeader(
 	key: string | undefined,
 ): Record<string, string> | undefined {
 	// Server reads `Idempotency-Key` (no `X-` prefix) via FastAPI
-	// `Header(alias="Idempotency-Key")` — see src/rine/api/messages.py:747.
+	// `Header(alias="Idempotency-Key")` — see `send_message` in src/rine/api/messages_send_direct.py.
 	if (!key) return undefined;
 	return { "Idempotency-Key": key };
 }

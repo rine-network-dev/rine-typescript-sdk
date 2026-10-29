@@ -29,7 +29,6 @@ import {
 } from "./resources/agent-handles.js";
 import { GroupsResource } from "./resources/groups.js";
 import {
-	type AddPostQuantumKeyOptions,
 	type AgentCardInput,
 	type CreateAgentOptions,
 	type EraseOrgOptions,
@@ -84,7 +83,21 @@ export type { StreamOptions };
 // ---------------------------------------------------------------------------
 
 export interface RineClientOptions {
+	/** Runtime config dir: profiles, agent keys, token cache. */
 	configDir?: string;
+	/**
+	 * Owner dir holding `root.key` (default `$RINE_OWNER_DIR`, else
+	 * `~/.config/rine-owner`). A client whose owner dir has a root acts as the org.
+	 */
+	ownerDir?: string;
+	/**
+	 * Act only as the agent whose leaf keys the config dir holds: the owner dir is
+	 * never read, so a `root.key` on the host cannot make this client act as the
+	 * org. Combined with `ownerDir` it throws a `ConfigError`.
+	 */
+	agentOnly?: boolean;
+	/** Profile to act as (default `default`). */
+	profile?: string;
 	apiUrl?: string;
 	/** Agent handle or UUID, sent as `X-Rine-Agent` verbatim (no bare names). */
 	agent?: string;
@@ -288,6 +301,9 @@ export class AsyncRineClient implements AsyncDisposable {
 	constructor(opts: RineClientOptions = {}) {
 		this.http = new SDKHttpClient({
 			configDir: opts.configDir,
+			ownerDir: opts.ownerDir,
+			agentOnly: opts.agentOnly,
+			profile: opts.profile,
 			apiUrl: opts.apiUrl,
 			agent: opts.agent,
 			timeout: opts.timeout,
@@ -900,9 +916,6 @@ export class AsyncRineClient implements AsyncDisposable {
 	verifyIdentity(agentId: AgentUuid, opts?: VerifyIdentityOptions) {
 		return this.identity.verifyIdentity(agentId, opts);
 	}
-	addPostQuantumKey(agentId: AgentUuid, opts?: AddPostQuantumKeyOptions) {
-		return this.identity.addPostQuantumKey(agentId, opts);
-	}
 	getAgentCard(agentId: AgentUuid) {
 		return this.identity.getAgentCard(agentId);
 	}
@@ -993,6 +1006,9 @@ export class AsyncRineClient implements AsyncDisposable {
 	}): AsyncRineClient {
 		const derived = new AsyncRineClient({
 			configDir: this.http.configDir,
+			ownerDir: this.http.ownerDir,
+			agentOnly: this.http.agentOnly,
+			profile: this.http.profile,
 			apiUrl: this.http.apiUrl,
 			agent: opts.agent ?? this.http.agentHeader?.[ACTING_AGENT_HEADER],
 			timeout: opts.timeout ?? this.http.timeout,
@@ -1000,7 +1016,7 @@ export class AsyncRineClient implements AsyncDisposable {
 			middleware: this.http.middleware,
 			signal: opts.signal ?? this._signal,
 		});
-		// The agent list is ORG-scoped and this derived client shares the
+		// The agent list is Key-scoped and this derived client shares the
 		// credentials that scope it, so it shares the fetch too. Without this a
 		// host that derives per call — `rine-mastra` does, on every tool execute —
 		// would pay `GET /agents` per render, which is not the cost the cache is

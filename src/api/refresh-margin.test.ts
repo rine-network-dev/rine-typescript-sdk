@@ -26,27 +26,35 @@ vi.mock("@rine-network/core", async () => {
 		);
 	return {
 		...actual,
-		loadCredentials: vi.fn(() => ({
-			default: { client_id: "c", client_secret: "s" },
-		})),
 		getOrRefreshToken: getTokenSpy,
 		jitteredRefreshMargin: marginSpy,
 	};
 });
 
+import {
+	type CustodyFixture,
+	makeCustodyFixture,
+	seedAgent,
+} from "@rine-network/core/testing";
 import { SDKHttpClient } from "./http.js";
 
-/** refreshMargin passed on the Nth getOrRefreshToken call (5th positional arg). */
+const AGENT_ID = "11111111-1111-4111-8111-111111111111";
+
+/** refreshMargin passed on the Nth getOrRefreshToken call (4th positional arg). */
 function marginOfCall(n: number): number | undefined {
 	const args = getTokenSpy.mock.calls[n] as unknown[] | undefined;
-	const opts = args?.[4] as { refreshMargin?: number } | undefined;
+	const opts = args?.[3] as { refreshMargin?: number } | undefined;
 	return opts?.refreshMargin;
 }
 
 describe("SDKHttpClient per-instance refresh margin", () => {
+	let fx: CustodyFixture;
+
 	beforeEach(() => {
 		getTokenSpy.mockClear();
 		marginSpy.mockReset();
+		fx = makeCustodyFixture();
+		seedAgent(fx, AGENT_ID);
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(
@@ -60,11 +68,21 @@ describe("SDKHttpClient per-instance refresh margin", () => {
 	});
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		fx.cleanup();
 	});
+
+	function client(): SDKHttpClient {
+		return new SDKHttpClient({
+			apiUrl: "https://api.test",
+			configDir: fx.dirs.configDir,
+			ownerDir: fx.dirs.ownerDir,
+			profile: "agent",
+		});
+	}
 
 	it("draws the margin once at construction and reuses it across requests", async () => {
 		marginSpy.mockReturnValue(90);
-		const http = new SDKHttpClient({ apiUrl: "https://api.test" });
+		const http = client();
 
 		await http.get("/agents", { operation: "poll" });
 		await http.get("/agents", { operation: "poll" });
@@ -76,8 +94,8 @@ describe("SDKHttpClient per-instance refresh margin", () => {
 
 	it("gives co-located instances distinct margins so they desynchronize", async () => {
 		marginSpy.mockReturnValueOnce(70).mockReturnValueOnce(150);
-		const a = new SDKHttpClient({ apiUrl: "https://api.test" });
-		const b = new SDKHttpClient({ apiUrl: "https://api.test" });
+		const a = client();
+		const b = client();
 
 		await a.get("/agents", { operation: "poll" });
 		await b.get("/agents", { operation: "poll" });

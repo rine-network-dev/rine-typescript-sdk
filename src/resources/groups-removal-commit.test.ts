@@ -316,13 +316,10 @@ describe("GroupsResource.removeMember — the Remove commit", () => {
     expect(result.mlsRemovalEpoch).toBe(11);
     expect(result.mlsRemovedLeaf).toBe(false);
     // The sentence reports what happened, and says the narrow, true thing.
-    // `removedLeaf: false` is "no leaf carries the key they publish now", not
-    // "they hold no leaf": a target that rotated its signing key is
-    // indistinguishable from here and still holds its old leaf.
-    expect(result.message).toContain(
-      "no leaf in the ratchet tree carries the signing key they publish now",
-    );
-    expect(result.message).toContain("rotated their signing key");
+    // `removedLeaf: false` says no leaf in the tree is theirs, and that the
+    // server's refusal to hand them traffic is what keeps them out.
+    expect(result.message).toContain("no leaf in the ratchet tree is theirs");
+    expect(result.message).not.toContain("rotated");
     expect(result.message).not.toContain("took their ratchet-tree leaf");
   });
 

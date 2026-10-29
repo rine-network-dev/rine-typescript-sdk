@@ -27,17 +27,10 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		decryptMessage: decryptMessageMock,
 		decryptGroupMessage: decryptGroupMessageMock,
 		fetchAndIngestPendingSKDistributions: fetchSKMock,
-		// `PollingResource.poll()` reads the default credential entry's
-		// `poll_url`. Return a
-		// deterministic stub here so the tests don't hit the real `loadCredentials`
-		// → `fs.readFileSync` path.
-		loadCredentials: () => ({
-			default: {
-				client_id: "test-client",
-				client_secret: "test-secret",
-				poll_url: "/poll/test-token",
-			},
-		}),
+		// `PollingResource.poll()` reads `poll_url` from the active profile.
+		// Return a deterministic stub here so the tests don't hit the real
+		// `getProfile` → `fs.readFileSync` path.
+		getProfile: () => ({ poll_url: "/poll/test-token" }),
 	};
 });
 
@@ -81,11 +74,19 @@ function makeHttpStub(respond: (call: RecordedCall) => unknown): {
 		return respond(call) as T;
 	};
 	const stub = {
-		// `PollingResource.poll()` reads `this.http.configDir`; a real SDK
-		// client computes this via `resolveConfigDir()` but the stub just
-		// exposes an empty string — the mocked `loadCredentials` above ignores
-		// the argument entirely, so the value is only used for type conformance.
+		// `PollingResource.poll()` reads `this.http.configDir` and
+		// `this.http.profile`; a real SDK client computes these from its
+		// options but the stub just exposes empty/default values — the mocked
+		// `getProfile` above ignores the arguments entirely, so the values are
+		// only used for type conformance.
 		configDir: "",
+		ownerDir: "",
+		profile: "default",
+		dirs: { configDir: "", ownerDir: "" },
+		custodyDirs: () => ({ configDir: "", ownerDir: "" }),
+		getCoreHttpClient(): unknown {
+			return {};
+		},
 		async get<T>(p: string, opts?: Record<string, unknown>): Promise<T> {
 			return handle<T>("GET", p, undefined, opts);
 		},
@@ -503,7 +504,7 @@ describe("WebhooksResource", () => {
 // ===========================================================================
 
 describe("PollingResource", () => {
-	it("poll() GETs the credential poll_url unauthenticated and coerces various response shapes", async () => {
+	it("poll() GETs the profile poll_url unauthenticated and coerces various response shapes", async () => {
 		const responses = [5, { count: 7 }, "3"];
 		let i = 0;
 		const { http, calls } = makeHttpStub(() => responses[i++]);
@@ -512,8 +513,8 @@ describe("PollingResource", () => {
 		expect(await polling.poll()).toBe(7);
 		expect(await polling.poll()).toBe(3);
 		for (const c of calls) {
-			// The SDK reads `poll_url` from the default credential entry
-			// rather than hardcoding `/poll`. The mocked `loadCredentials`
+			// The SDK reads `poll_url` from the active profile
+			// rather than hardcoding `/poll`. The mocked `getProfile`
 			// above returns `/poll/test-token`.
 			expect(c.path).toBe("/poll/test-token");
 			expect((c.opts as { unauthenticated: boolean }).unauthenticated).toBe(
@@ -563,7 +564,7 @@ describe("decryptEnvelope dispatch", () => {
 	const agentId = "11111111-1111-4111-8111-111111111111";
 	const coreStub = {} as import("@rine-network/core").HttpClient;
 
-	it("routes hpke-v1 envelopes through decryptMessage", async () => {
+	it("routes hpke-hybrid-v2 envelopes through decryptMessage", async () => {
 		decryptMessageMock.mockResolvedValue({
 			plaintext: "hello",
 			verified: true,
@@ -579,7 +580,7 @@ describe("decryptEnvelope dispatch", () => {
 				from_agent_id: SENDER_ID,
 				type: "rine.v1.task_request",
 				encrypted_payload: "ENC",
-				encryption_version: "hpke-v1",
+				encryption_version: "hpke-hybrid-v2",
 				created_at: "2026-04-11T12:00:00Z",
 			} as never,
 		});
@@ -676,7 +677,7 @@ describe("decryptEnvelope dispatch", () => {
 				from_agent_id: SENDER_ID,
 				type: "rine.v1.task_request",
 				encrypted_payload: "",
-				encryption_version: "hpke-v1",
+				encryption_version: "hpke-hybrid-v2",
 				created_at: "2026-04-11T12:00:00Z",
 			} as never,
 		});
@@ -700,7 +701,7 @@ describe("decryptEnvelope plaintext auto-parse", () => {
 			type: "rine.v1.task_request",
 			content_type: contentType,
 			encrypted_payload: "ENC",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 			created_at: "2026-04-11T12:00:00Z",
 		} as never;
 	}
@@ -799,7 +800,7 @@ describe("decryptEnvelope sender binding", () => {
 			from_agent_id: SENDER_ID,
 			type: "rine.v1.task_request",
 			encrypted_payload: "ENC",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 			created_at: "2026-04-11T12:00:00Z",
 			...over,
 		} as never;

@@ -55,10 +55,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 		fetchAgents: vi.fn(async () => [
 			{ id: SENDER_ID, handle: "me@acme.rine.network" },
 		]),
-		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
-		encryptMessage: vi.fn(async () => ({
+		sealForAgent: vi.fn(async () => ({
 			encrypted_payload: "DM-CIPHERTEXT",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 			sender_signing_kid: `rine:${SENDER_ID}`,
 		})),
 	};
@@ -85,7 +84,7 @@ const RESPONSE = {
 		to_agent_id: BOT_ID,
 		type: "rine.v1.task_request",
 		encrypted_payload: "DM-CIPHERTEXT",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		created_at: "2026-01-01T00:00:00.000Z",
 		metadata: {},
 	},
@@ -177,7 +176,7 @@ describe("sendAndWait() with a recipient that names a group", () => {
 			REFUSAL_HEAD,
 		);
 		expect(writes).toEqual([]);
-		// Exactly one org-scoped read is what the fix costs. Two would mean the
+		// Exactly one credential-scoped read is what the fix costs. Two would mean the
 		// probe ran and the 1:1 path then asked again; none would mean the
 		// refusal is guessing from the spelling.
 		expect(groupReads(reads)).toEqual([`/groups/${GROUP_ID}`]);

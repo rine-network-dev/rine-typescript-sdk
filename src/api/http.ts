@@ -15,17 +15,32 @@
 
 import {
   ACTING_AGENT_HEADER,
+  AGENT_ONLY_OWNER_DIR,
   type AgentKeysResponse,
+  type AuthDirs,
+  type CustodyDirs,
+  DEFAULT_PROFILE,
   HttpClient as CoreHttpClient,
+  KeyPins,
+  type ResolvedAuth,
   TtlCache,
   getOrRefreshToken,
+  inBackground,
   jitteredRefreshMargin,
-  loadCredentials,
   normalizeActor,
+  ownIdentityFor,
   resolveApiUrl as resolveCoreApiUrl,
+  resolveAuth,
   resolveConfigDir as resolveCoreConfigDir,
+  resolveOwnerDir as resolveCoreOwnerDir,
+  startupEscrowSweep,
 } from "@rine-network/core";
-import { RineTimeoutError, raiseForStatus } from "../errors.js";
+import {
+  ConfigError,
+  RineTimeoutError,
+  raiseForStatus,
+  sdkErrorFromCore,
+} from "../errors.js";
 import { anySignal } from "../utils/abort.js";
 import { GroupDecryptMemo } from "../utils/decrypt-memo.js";
 import { sleepWithSignal } from "../utils/sleep.js";
@@ -41,8 +56,23 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface SDKHttpClientOptions {
-  /** Path to the rine config directory. */
+  /** Path to the rine config directory (the runtime dir: profiles, leaf keys, token cache). */
   configDir?: string;
+  /**
+   * Path to the owner directory holding `root.key`. Default: core's
+   * `resolveOwnerDir()` (`RINE_OWNER_DIR`, else `~/.config/rine-owner`). A client
+   * whose owner dir has a root acts as the org; one without acts as the agent or
+   * branch its profile names.
+   */
+  ownerDir?: string;
+  /**
+   * Act only as the agent whose leaf keys the config dir holds. The client never
+   * reads an owner dir, so a `root.key` on the host cannot make it act as the org;
+   * combining this with `ownerDir` throws a `ConfigError`.
+   */
+  agentOnly?: boolean;
+  /** Profile to act as. Default: the org when a root is present, else `default`. */
+  profile?: string;
   /** API base URL. */
   apiUrl?: string;
   /**
@@ -117,6 +147,13 @@ export class SDKHttpClient {
   private readonly _configDir: string | undefined;
   /** Memoized result of the lazy auto-resolution (populated at most once). */
   private _resolvedConfigDir: string | undefined;
+  private readonly _ownerDir: string | undefined;
+  private readonly _agentOnly: boolean;
+  private readonly _profile: string | undefined;
+  /** Whether this client has started its one start-up escrow sweep. */
+  private _escrowSwept = false;
+  /** The resolved principal; memoized once found, so a later onboarding is still picked up. */
+  private _auth: ResolvedAuth | undefined;
   /**
    * The `apiUrl` as passed to the constructor, or `undefined` when the caller
    * relied on auto-resolution. Kept raw so the `RINE_API_URL` env is read
@@ -159,12 +196,75 @@ export class SDKHttpClient {
    * are not secret, so `close()` leaves it alone.
    */
   private readonly keyCache = new TtlCache<AgentKeysResponse>();
+  /**
+   * Per-client key-chain pins, threaded into every short-lived crypto-path core
+   * client for the same reason as {@link keyCache}: pins that reset with each
+   * client would let a server re-home a peer or serve a lower `key_gen` on any
+   * single operation. Pinned state is public, so `close()` leaves it alone.
+   */
+  private readonly keyPins = new KeyPins();
 
   get configDir(): string {
     return this.resolveConfigDir();
   }
   get apiUrl(): string {
     return this.resolveApiUrl();
+  }
+  /** The owner dir: where `root.key` lives, never the runtime config dir. Unset for an agent-only client. */
+  get ownerDir(): string | undefined {
+    return this._agentOnly ? undefined : (this._ownerDir ?? resolveCoreOwnerDir());
+  }
+  /** Whether this client never reads an owner dir and only acts as an agent. */
+  get agentOnly(): boolean {
+    return this._agentOnly;
+  }
+  /** The profile name this client acts as (`default` unless one was passed). */
+  get profile(): string {
+    return this._profile ?? DEFAULT_PROFILE;
+  }
+  /** The org id the active profile was created under, or `undefined` before onboarding. */
+  get localOrgId(): string | undefined {
+    return this.auth()?.orgId;
+  }
+  get dirs(): AuthDirs {
+    const ownerDir = this.ownerDir;
+    return ownerDir === undefined
+      ? { configDir: this.configDir, agentOnly: true }
+      : { configDir: this.configDir, ownerDir };
+  }
+  /** The dirs an owner-side operation (minting or rotating an agent) needs; an agent-only client has none. */
+  custodyDirs(): CustodyDirs {
+    const dirs = this.dirs;
+    if (dirs.agentOnly === true) {
+      throw new ConfigError("An agent-only client cannot mint or rotate agents: it holds no owner dir.");
+    }
+    return dirs;
+  }
+  /** The principal this client acts as, or `undefined` before any onboarding. */
+  private auth(): ResolvedAuth | undefined {
+    this._auth ??= resolveAuth(this.dirs, this._profile);
+    return this._auth;
+  }
+  private token(opts: { force?: boolean }): Promise<string> {
+    const auth = this.auth();
+    return getOrRefreshToken(
+      auth?.cacheDir ?? this.configDir,
+      this.apiUrl,
+      auth?.signer,
+      { ...opts, refreshMargin: this._refreshMargin },
+    );
+  }
+  /**
+   * The bearer token for this client's own requests. A revoked principal the
+   * token mint names surfaces as the SDK's `PrincipalRevokedError`; the core
+   * HTTP client keeps `token()` and its core error, which the escrow code reads.
+   */
+  private async requestToken(opts: { force?: boolean }): Promise<string> {
+    try {
+      return await this.token(opts);
+    } catch (error) {
+      throw sdkErrorFromCore(error);
+    }
   }
   get timeout(): number {
     return this._timeout;
@@ -191,10 +291,10 @@ export class SDKHttpClient {
    * Lazily resolve the config directory. When no `configDir` was passed to the
    * constructor, fall back to rine-core's `resolveConfigDir()` (precedence:
    * `RINE_CONFIG_DIR` > `~/.config/rine` > `cwd/.rine`) at the point
-   * credentials are actually loaded — never at construction. This mirrors the
+   * the principal is actually loaded — never at construction. This mirrors the
    * Python SDK's `config_dir or resolve_config_dir()` while keeping the
    * browser/edge no-fs path intact: a client constructed with an explicit
-   * `configDir` (or one that never loads credentials) never touches `node:fs`.
+   * `configDir` (or one that never loads a principal) never touches `node:fs`.
    * Memoized so the resolver's filesystem probes run at most once per client.
    */
   private resolveConfigDir(): string {
@@ -207,6 +307,12 @@ export class SDKHttpClient {
 
   constructor(opts: SDKHttpClientOptions = {}) {
     this._configDir = opts.configDir;
+    if (opts.agentOnly === true && opts.ownerDir !== undefined) {
+      throw new ConfigError(AGENT_ONLY_OWNER_DIR);
+    }
+    this._ownerDir = opts.ownerDir;
+    this._agentOnly = opts.agentOnly === true;
+    this._profile = opts.profile;
     this._apiUrl = opts.apiUrl;
     const agent = normalizeActor(opts.agent);
     this.agentHeader = agent ? { [ACTING_AGENT_HEADER]: agent } : undefined;
@@ -320,7 +426,7 @@ export class SDKHttpClient {
   }
 
   /**
-   * Returns a rine-core HttpClient bound to the same credentials, base URL,
+   * Returns a rine-core HttpClient bound to the same principal, base URL,
    * and agent header as this SDKHttpClient, scoped to the given signal.
    *
    * Short-lived by contract — construct one per crypto operation, do not
@@ -334,19 +440,15 @@ export class SDKHttpClient {
    * the SDK middleware pipeline.
    */
   getCoreHttpClient(opts: GetCoreHttpClientOptions = {}): CoreHttpClient {
-    const configDir = this.resolveConfigDir();
-    const entry = loadCredentials(configDir).default;
     return new CoreHttpClient({
       apiUrl: this.apiUrl,
-      tokenFn: (force) =>
-        getOrRefreshToken(configDir, this.apiUrl, entry, "default", {
-          force,
-          refreshMargin: this._refreshMargin,
-        }),
+      tokenFn: (force) => this.token({ force }),
       defaultHeaders: this.agentHeader,
       canRefresh: true,
       signal: opts.signal,
       keyCache: this.keyCache,
+      keyPins: this.keyPins,
+      ownIdentity: ownIdentityFor(this.configDir, this.auth()),
     });
   }
 
@@ -383,6 +485,26 @@ export class SDKHttpClient {
   }
 
   /**
+   * Clear the escrow files a previous process left behind (a leave or a
+   * recovery ends the process that wrote them), once per client, on its first
+   * request, for the agent this client's principal can act as (an agent
+   * principal acts only as itself; the others sweep every local agent). Not
+   * awaited and never throws: with nothing to clear it costs two
+   * directory reads, and a pass that fails is retried by the MLS heartbeat.
+   */
+  private sweepEscrowOnce(): void {
+    if (this._escrowSwept) return;
+    this._escrowSwept = true;
+    inBackground(() =>
+      startupEscrowSweep(
+        this.getCoreHttpClient(),
+        this.configDir,
+        this.auth()?.agentId,
+      ),
+    );
+  }
+
+  /**
    * Shared request execution: builds context, runs middleware pipeline,
    * handles errors and timeouts, returns the validated Response.
    */
@@ -391,6 +513,7 @@ export class SDKHttpClient {
     path: string,
     opts: GetOptions & { body?: unknown } = {},
   ): Promise<Response> {
+    this.sweepEscrowOnce();
     const { params, extraHeaders, signal, body, operation } = opts;
     const url = buildUrl(this.apiUrl, path, params);
     const headers = buildHeaders(this.agentHeader, extraHeaders, body);
@@ -480,16 +603,7 @@ export class SDKHttpClient {
         return fetch(url, { method, headers, body, signal: fetchSignal });
       }
 
-      const configDir = this.resolveConfigDir();
-      const creds = loadCredentials(configDir).default;
-      const token = await getOrRefreshToken(
-        configDir,
-        this.apiUrl,
-        creds,
-        "default",
-        { refreshMargin: this._refreshMargin },
-      );
-      headers.Authorization = `Bearer ${token}`;
+      headers.Authorization = `Bearer ${await this.requestToken({})}`;
       const res = await fetch(url, {
         method,
         headers,
@@ -499,14 +613,7 @@ export class SDKHttpClient {
 
       // 401 → retry once (token might have just expired)
       if (res.status === 401) {
-        const tokenRetry = await getOrRefreshToken(
-          configDir,
-          this.apiUrl,
-          creds,
-          "default",
-          { force: true },
-        );
-        headers.Authorization = `Bearer ${tokenRetry}`;
+        headers.Authorization = `Bearer ${await this.requestToken({ force: true })}`;
         return fetch(url, {
           method,
           headers,
@@ -557,7 +664,7 @@ function buildUrl(
   path: string,
   params?: Record<string, string | number | boolean | undefined>,
 ): string {
-  // Absolute URLs (e.g. poll_url from credentials) bypass base URL prepend.
+  // Absolute URLs (e.g. poll_url from a profile) bypass base URL prepend.
   let url =
     path.startsWith("http://") || path.startsWith("https://")
       ? path

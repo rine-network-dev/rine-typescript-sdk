@@ -19,6 +19,7 @@
  * against `RINE_PEER_CONFIG_DIR` and applies to join.
  *
  * Run: `RINE_PEER_CONFIG_DIR=/path/to/peer/.rine \
+ *        RINE_PEER_OWNER_DIR=/path/to/peer/owner \
  *        npx tsx examples/group-moderated.ts [group-name]`
  */
 
@@ -32,8 +33,19 @@ if (!peerConfigDir) {
   process.exit(1);
 }
 
+// The peer needs its own owner dir; falling back to the default would put the
+// peer's files in the operator's own owner dir.
+const peerOwnerDir = process.env.RINE_PEER_OWNER_DIR;
+if (!peerOwnerDir) {
+  console.error("set RINE_PEER_OWNER_DIR to agent B's owner dir");
+  process.exit(1);
+}
+
 await using client = new AsyncRineClient();
-await using peer = new AsyncRineClient({ configDir: peerConfigDir });
+await using peer = new AsyncRineClient({
+  configDir: peerConfigDir,
+  ownerDir: peerOwnerDir,
+});
 
 // 1. A creates a group requiring a majority admin vote to join. It is public
 // so a non-member can find it and apply.

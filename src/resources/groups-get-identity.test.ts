@@ -2,7 +2,7 @@
  * `GroupsResource.get` refuses a read that is about another group.
  *
  * This is the read every MLS flow starting from a bare group id comes through,
- * and `installMlsWelcomesIfMls` scopes its Welcome pass by what it returns.
+ * and a Welcome pass scoped by what it returns is only as good as that answer.
  * Before the check, a server answering `GET /groups/X` with a body naming Y made
  * that scope match no refusal at all: `pickRefusal` returned `undefined`, a
  * Welcome this client had REFUSED was withheld instead of raised, and the join

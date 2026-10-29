@@ -22,51 +22,47 @@ vi.mock("@rine-network/core", async () => {
 		);
 	return {
 		...actual,
-		loadCredentials: vi.fn(() => ({
-			default: { client_id: "c", client_secret: "s" },
-		})),
 		getOrRefreshToken: getTokenSpy,
 	};
 });
 
 import {
+	KeyChainError,
 	fetchAgentKeys,
 	fetchRecipientKeys,
-	generateAgentKeys,
-	signingPublicKeyToJWK,
-	toBase64Url,
 } from "@rine-network/core";
+import {
+	type CustodyFixture,
+	makeCustodyFixture,
+	publishedKeys,
+	seedAgent,
+} from "@rine-network/core/testing";
 import { SDKHttpClient } from "./http.js";
 
 const PEER_ID = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
 
-/** A well-formed GET /agents/{id}/keys body for a real generated keypair. */
-const PEER_KEYS = generateAgentKeys();
-const KEYS_BODY = JSON.stringify({
-	agent_id: PEER_ID,
-	signing_public_key: signingPublicKeyToJWK(PEER_KEYS.signing.publicKey),
-	encryption_public_key: {
-		kty: "OKP",
-		crv: "X25519",
-		x: toBase64Url(PEER_KEYS.encryption.publicKey),
-	},
-});
-
-function sdkClient(): SDKHttpClient {
+/** A client acting as the fixture's seeded agent, so the key chain verifies. */
+function sdkClient(fx: CustodyFixture): SDKHttpClient {
 	return new SDKHttpClient({
 		apiUrl: "https://api.test",
-		configDir: "/nonexistent",
+		configDir: fx.dirs.configDir,
+		ownerDir: fx.dirs.ownerDir,
+		profile: "agent",
 	});
 }
 
 describe("SDKHttpClient peer-key cache", () => {
+	let fx: CustodyFixture;
 	let fetchSpy: ReturnType<typeof vi.fn>;
 
 	beforeEach(() => {
 		getTokenSpy.mockClear();
+		fx = makeCustodyFixture();
+		seedAgent(fx, PEER_ID);
+		// The full, verifiable key chain for the fixture-org peer.
 		fetchSpy = vi.fn(
 			async () =>
-				new Response(KEYS_BODY, {
+				new Response(JSON.stringify(publishedKeys(PEER_ID)), {
 					status: 200,
 					headers: { "content-type": "application/json" },
 				}),
@@ -75,10 +71,11 @@ describe("SDKHttpClient peer-key cache", () => {
 	});
 	afterEach(() => {
 		vi.unstubAllGlobals();
+		fx.cleanup();
 	});
 
 	it("serves a verify from the cache another operation's client filled", async () => {
-		const http = sdkClient();
+		const http = sdkClient(fx);
 
 		const first = await fetchAgentKeys(http.getCoreHttpClient(), PEER_ID);
 		const second = await fetchAgentKeys(http.getCoreHttpClient(), PEER_ID);
@@ -89,8 +86,8 @@ describe("SDKHttpClient peer-key cache", () => {
 	});
 
 	it("gives each SDK client its own cache, so one cannot stale another", async () => {
-		const a = sdkClient();
-		const b = sdkClient();
+		const a = sdkClient(fx);
+		const b = sdkClient(fx);
 
 		await fetchAgentKeys(a.getCoreHttpClient(), PEER_ID);
 		const other = await fetchAgentKeys(b.getCoreHttpClient(), PEER_ID);
@@ -100,11 +97,30 @@ describe("SDKHttpClient peer-key cache", () => {
 	});
 
 	it("still fetches fresh for an outbound seal after a verify filled the cache", async () => {
-		const http = sdkClient();
+		const http = sdkClient(fx);
 
 		await fetchAgentKeys(http.getCoreHttpClient(), PEER_ID);
 		await fetchRecipientKeys(http.getCoreHttpClient(), PEER_ID);
 
 		expect(fetchSpy).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps a peer pinned to its first org across operations", async () => {
+		const http = sdkClient(fx);
+		const rehomed = publishedKeys(PEER_ID, 0, new Uint8Array(32).fill(9));
+		expect(rehomed.org_id).not.toBe(publishedKeys(PEER_ID).org_id);
+
+		await fetchRecipientKeys(http.getCoreHttpClient(), PEER_ID);
+		fetchSpy.mockImplementation(
+			async () =>
+				new Response(JSON.stringify(rehomed), {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+		);
+
+		await expect(
+			fetchRecipientKeys(http.getCoreHttpClient(), PEER_ID),
+		).rejects.toThrow(KeyChainError);
 	});
 });

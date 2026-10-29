@@ -15,9 +15,8 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Stub rine-core auth helpers — the authenticated path calls `loadCredentials`
-// and `getOrRefreshToken`, both of which touch disk / the network in real
-// usage. Hoisted by vitest above the SDKHttpClient import.
+// Stub rine-core auth helpers — the authenticated path calls `getOrRefreshToken`,
+// which touches disk / the network in real usage. Hoisted by vitest above the SDKHttpClient import.
 vi.mock("@rine-network/core", async () => {
 	const actual =
 		await vi.importActual<typeof import("@rine-network/core")>(
@@ -25,15 +24,6 @@ vi.mock("@rine-network/core", async () => {
 		);
 	return {
 		...actual,
-		loadCredentials: vi.fn(() => ({
-			default: {
-				org_id: "stub",
-				agent_handle: "stub@stub",
-				agent_id: "stub",
-				signing_key: "stub",
-				encryption_key: "stub",
-			},
-		})),
 		getOrRefreshToken: vi.fn(async () => "stub-token"),
 		// `resolveSenderId()` calls `fetchAgents(core)` + `resolveAgent(...)`
 		// before the inbox GET. Stub both so the resource-layer integration

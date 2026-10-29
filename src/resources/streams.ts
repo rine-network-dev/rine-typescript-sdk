@@ -8,6 +8,7 @@
  * - Full AbortSignal cancellation
  */
 
+import { nextReconnectBackoffSeconds } from "@rine-network/core";
 import type { SDKHttpClient } from "../api/http.js";
 import type { RineEvent } from "../types.js";
 import { anySignal } from "../utils/abort.js";
@@ -130,7 +131,7 @@ export class StreamsResource {
 				if (signal.aborted) break;
 
 				// Exponential backoff before reconnect
-				backoff = Math.min(backoff * 2, 30);
+				backoff = nextReconnectBackoffSeconds(backoff);
 				yield {
 					type: "heartbeat",
 					data: `reconnecting in ${backoff}s: ${err instanceof Error ? err.message : String(err)}`,

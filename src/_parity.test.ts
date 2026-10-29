@@ -23,16 +23,12 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-// Stub the core loader so `new AsyncRineClient()` doesn't reach disk.
+// Stub the core token source so `new AsyncRineClient()` doesn't reach disk.
 // This is a pure surface test — it never calls a method.
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const original = (await importOriginal()) as Record<string, unknown>;
 	return {
 		...original,
-		loadCredentials: () => ({
-			profiles: { default: { api_url: "https://example.test" } },
-			default_profile: "default",
-		}),
 		getOrRefreshToken: async () => "stub-token",
 		resolveConfigDir: () => "/tmp/rine-surface-test",
 		resolveApiUrl: () => "https://example.test",

@@ -27,6 +27,7 @@ import {
 	type PayResult,
 	type PaymentsContext,
 	RECEIPT_TYPE,
+	requireVerifiedRow,
 	resolveAgentId,
 } from "./x402-shared.js";
 
@@ -36,13 +37,19 @@ import {
  * daily journal under the cross-process lock as the LAST act before the reply is
  * sent. A policy refusal (or an `ALREADY_PAID` re-pay without
  * `allowRepay`) throws {@link X402Error} and NO message is sent. The reservation
- * is fail-closed: once debited it stands even if the send then fails.
+ * is fail-closed: once debited it stands even if the send then fails. A quote
+ * whose sender is not `verified` is refused before any of that: with
+ * `SENDER_UNVERIFIABLE` (retryable) when the sender's key could not be read,
+ * `INAUTHENTIC_SENDER` otherwise.
  */
 export async function payQuote(
 	ctx: PaymentsContext,
 	quote: DecryptedMessage,
 	opts: PayOptions = {},
 ): Promise<PayResult> {
+	// A quote is only the payee's word when the payee's signature verified: the
+	// same gate `rine pay` applies, before any wallet work.
+	requireVerifiedRow(quote);
 	const pr = extractPaymentRequired(quote);
 	const configDir = ctx.http.configDir;
 	const agentId = await resolveAgentId(ctx, opts.agent, opts.signal);

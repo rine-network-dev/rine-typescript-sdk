@@ -1,7 +1,7 @@
 /**
  * The self-seal blob rides the wire on 1:1 send + reply.
  *
- * `encryptMessage` returns `self_encrypted_payload` on its
+ * `sealForAgent` returns `self_encrypted_payload` on its
  * `EncryptResult`; both `send()` (1:1 branch of `buildSendBody`) and `reply()`
  * spread `...encrypted` into the POST body, so the blob reaches the server
  * with NO production code change. These tests pin that contract by capturing
@@ -21,7 +21,7 @@ const RECIPIENT_ID = randomUUID();
 const GROUP_ID = randomUUID();
 const SELF_BLOB = "SELF-SEALED-BLOB";
 
-// Mock the rine-core bridge BEFORE importing the SUT. `encryptMessage` returns
+// Mock the rine-core bridge BEFORE importing the SUT. `sealForAgent` returns
 // the self blob; the group encrypt helpers do NOT.
 vi.mock("@rine-network/core", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("@rine-network/core")>();
@@ -31,11 +31,10 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 			{ id: SENDER_ID, handle: "me@acme.rine.network" },
 		]),
 		resolveAgent: vi.fn(async () => ({ agentId: SENDER_ID })),
-		fetchRecipientKeys: vi.fn(async () => ({ encryption: new Uint8Array(32) })),
 		normalizeHandle: vi.fn((h: string) => h),
-		encryptMessage: vi.fn(async () => ({
+		sealForAgent: vi.fn(async () => ({
 			encrypted_payload: "RECIPIENT-CIPHERTEXT",
-			encryption_version: "hpke-v1",
+			encryption_version: "hpke-hybrid-v2",
 			sender_signing_kid: `rine:${SENDER_ID}`,
 			self_encrypted_payload: SELF_BLOB,
 		})),
@@ -77,7 +76,7 @@ const RESPONSE = {
 	to_agent_id: RECIPIENT_ID,
 	type: "rine.v1.task_request",
 	encrypted_payload: "RECIPIENT-CIPHERTEXT",
-	encryption_version: "hpke-v1",
+	encryption_version: "hpke-hybrid-v2",
 	created_at: "2026-06-20T00:00:00.000Z",
 	metadata: {},
 };

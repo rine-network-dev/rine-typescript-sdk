@@ -17,6 +17,7 @@ import {
 	type SettlementResponse,
 	X402Error,
 	X402_CONTENT_TYPE,
+	X402_ERROR,
 	buildPaymentRequiredMessage,
 	buildReceiptMessage,
 	refusalReceiptBody,
@@ -34,6 +35,7 @@ import {
 	type Recipient,
 	mergeMetadata,
 	reconcileExpected,
+	requireVerifiedRow,
 	resolveAgentId,
 } from "./x402-shared.js";
 
@@ -76,7 +78,11 @@ export function issueQuote(
  * `payTo`/asset/network/scheme or underpayment), or a malformed payload all
  * REFUSE with a `success:false` receipt — the payer `accepted` block is never
  * forwarded. {@link FulfillResult.matchedQuote} names the reconciled quote so the
- * caller can bind it to the good it delivers.
+ * caller can bind it to the good it delivers. A payment whose sender is not
+ * `verified` is refused the same way, before anything is parsed or settled. A
+ * sender whose key could not be read (`SENDER_UNVERIFIABLE`) is the exception:
+ * it throws, like a facilitator outage, with no receipt and the thread left
+ * open, so the same payment can be fulfilled once the lookup works.
  */
 export async function fulfill(
 	ctx: PaymentsContext,
@@ -85,8 +91,11 @@ export async function fulfill(
 ): Promise<FulfillResult> {
 	let pp: PaymentPayload;
 	try {
+		requireVerifiedRow(payment);
 		pp = extractPaymentPayload(payment);
 	} catch (err) {
+		if (err instanceof X402Error && err.code === X402_ERROR.SENDER_UNVERIFIABLE)
+			throw err;
 		return refuse(ctx, payment, opts, reason(err), "", "", null);
 	}
 

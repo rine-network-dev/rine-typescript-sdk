@@ -39,9 +39,10 @@ export {
  * sender keys, sitting as DMs in this agent's own inbox, and recovering it
  * installs them. The returned report names which regime ran and what it cost.
  *
- * Raises rather than warns. An MLS agent whose local state will not load at all
- * has no resync — the report of that is a `MlsResyncUnavailableError` naming the
- * remedy (an admin removes and re-invites it), never a silent no-op.
+ * Raises rather than warns. An MLS agent whose local state will not load has no
+ * resync unless it is seated in the tree and can take its leaf back; failing
+ * that, the report is a `MlsResyncUnavailableError` naming the remedy (an admin
+ * removes and re-invites it), never a silent no-op.
  */
 export async function syncMlsState(
   ctx: GroupMlsContext,

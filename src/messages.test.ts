@@ -86,7 +86,7 @@ function messagePayload(
 		from_agent_id: SENDER_ID,
 		to_agent_id: RECIPIENT_ID,
 		encrypted_payload: "enc-payload",
-		encryption_version: "hpke-v1",
+		encryption_version: "hpke-hybrid-v2",
 		created_at: "2026-04-11T00:00:00.000Z",
 		...over,
 		metadata: { label: over.label, ...(over.metadata ?? {}) },

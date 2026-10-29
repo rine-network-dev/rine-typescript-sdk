@@ -74,11 +74,8 @@ export function removalMessage(
     return (
       `Removed ${agentId} from group ${name}. The commit at epoch ` +
       `${removal.epoch} declared the removal, but no leaf in the ratchet tree ` +
-      `carries the signing key they publish now — nothing was removed from ` +
-      `the tree, so what keeps them out is this server declining to hand them ` +
-      `the group's traffic. If they rotated their signing key, their old leaf ` +
-      `is still there: have them rejoin, or re-invite them, so a Remove ` +
-      `commit can name it.`
+      `is theirs — nothing was removed from the tree, so what keeps them out ` +
+      `is this server declining to hand them the group's traffic.`
     );
   }
   if (mls) {

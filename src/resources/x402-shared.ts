@@ -14,6 +14,7 @@ import {
 	type SettlementResponse,
 	type VerifyResponse,
 	reconcilePayment,
+	requireVerifiedSender,
 	requirementAmount,
 } from "@rine-network/core";
 import type { SDKHttpClient } from "../api/http.js";
@@ -130,6 +131,24 @@ export function resolveAgentId(
 ): Promise<string> {
 	const core = ctx.http.getCoreHttpClient(signal ? { signal } : {});
 	return ctx.messages.resolveSenderId(core, agent);
+}
+
+/**
+ * The money gate for a received row: throws unless the row is `verified` as
+ * signed by its server-authenticated sender. A row that failed to decrypt or is
+ * cleartext A2A carries a final refusal, never the retryable one.
+ */
+export function requireVerifiedRow(message: DecryptedMessage): void {
+	requireVerifiedSender(
+		{
+			verificationStatus: message.verification_status,
+			senderKid: message.sender_kid,
+			decryptError: message.decrypt_error,
+			a2aCleartext: message.a2a_cleartext,
+		},
+		message.from_agent_id,
+		message.id,
+	);
 }
 
 /** Merge the x402 marker block onto any caller-supplied cleartext metadata. */

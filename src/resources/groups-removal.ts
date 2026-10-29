@@ -41,7 +41,11 @@
  * one.
  */
 
-import { ACTING_AGENT_HEADER } from "@rine-network/core";
+import {
+  ACTING_AGENT_HEADER,
+  isSelfLeave,
+  settleEscrow,
+} from "@rine-network/core";
 import type { MlsRemovalCommit } from "@rine-network/core";
 import {
   agentKeysExist,
@@ -111,7 +115,20 @@ export async function removeGroupMember(
     };
   }
 
-  const left = actingId.toLowerCase() === agentId.toLowerCase();
+  const left = isSelfLeave(agentId, actingId);
+  if (left) {
+    // The wipe below discards what a deferred drain left in the local state:
+    // settled locally, so the leave never waits on the server for it.
+    settleEscrow(
+      {
+        configDir: ctx.http.configDir,
+        agentId: actingId,
+        client: ctx.http.getCoreHttpClient({ signal }),
+        extraHeaders: { [ACTING_AGENT_HEADER]: actingId },
+      },
+      groupId,
+    );
+  }
   const group = await readGroup(ctx, groupId, signal);
   const mls = group !== null && groupIsMls(group);
   const removal = await deleteMemberEvictingIfAsked(

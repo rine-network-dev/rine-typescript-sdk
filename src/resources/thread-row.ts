@@ -34,8 +34,10 @@
 import {
 	type HttpClient as CoreHttpClient,
 	THREAD_UNAVAILABLE,
+	isA2aCleartext,
 	isAuthenticityFailure,
 	senderKeyExplanation,
+	withA2aCleartextNotice,
 } from "@rine-network/core";
 import type { SDKHttpClient } from "../api/http.js";
 import type { MessageRead, ThreadEntry, VerificationStatus } from "../types.js";
@@ -61,7 +63,7 @@ export async function toThreadEntry(opts: {
 	const { core, http, agentId, row } = opts;
 	const direction = row.direction ?? "received";
 
-	const { text, verificationStatus, explanation } = await renderRow({
+	const { text, verificationStatus, explanation, a2aCleartext } = await renderRow({
 		core,
 		http,
 		agentId,
@@ -76,6 +78,7 @@ export async function toThreadEntry(opts: {
 			verificationStatus,
 			type: row.type,
 			createdAt: row.created_at,
+			a2aCleartext,
 		},
 		explanation,
 	};
@@ -104,16 +107,18 @@ async function renderRow(opts: {
 	text: string;
 	verificationStatus: VerificationStatus;
 	explanation: string | null;
+	a2aCleartext: boolean;
 }> {
 	const { core, http, agentId, row, direction } = opts;
 	const isGroup = row.group_id != null;
 
 	// A `sent` row's sender is the caller. With neither that nor the row's own
 	// `from_agent_id` there is nothing to check the envelope's claim of authorship
-	// against, so the turn is unverifiable rather than quietly trusted.
+	// against, so the turn is unverifiable rather than quietly trusted. A cleartext
+	// A2A turn has no envelope to check, so a missing sender does not close it.
 	const fromAgentId =
 		row.from_agent_id ?? (direction === "sent" ? agentId : null);
-	if (fromAgentId == null) {
+	if (fromAgentId == null && !isA2aCleartext(row)) {
 		return degraded("unverifiable");
 	}
 
@@ -145,6 +150,9 @@ async function renderRow(opts: {
 		// Group rows may need a one-shot key-material refresh, same as inbox.
 		retrySenderKey: isGroup,
 		memo: http.decryptMemo,
+		// The self-sealed copy of a sent row is signed for the peer it went to.
+		scopeAgentId:
+			direction === "sent" ? (row.to_agent_id ?? undefined) : undefined,
 	});
 
 	// Fail-closed: a turn whose bytes do not match its signature, and one signed
@@ -166,9 +174,10 @@ async function renderRow(opts: {
 		);
 	}
 	return {
-		text: renderText(decrypted.plaintext),
+		text: withA2aCleartextNotice(row, renderText(decrypted.plaintext)),
 		verificationStatus: decrypted.verification_status ?? "unverifiable",
 		explanation: null,
+		a2aCleartext: isA2aCleartext(row),
 	};
 }
 
@@ -177,7 +186,12 @@ function degraded(
 	verificationStatus: VerificationStatus,
 	explanation: string | null = null,
 ) {
-	return { text: THREAD_UNAVAILABLE, verificationStatus, explanation };
+	return {
+		text: THREAD_UNAVAILABLE,
+		verificationStatus,
+		explanation,
+		a2aCleartext: false,
+	};
 }
 
 /**
