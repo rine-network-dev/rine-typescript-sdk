@@ -338,4 +338,37 @@ describe("StreamsResource", () => {
 		// Only the one heartbeat from the first failure; abort stops the loop.
 		expect(types).toEqual(["heartbeat"]);
 	});
+
+	it.each([
+		["by default", {}, "1"],
+		["when peek is true", { peek: true }, "1"],
+		["not when peek is false", { peek: false }, undefined],
+	])("sends the peek header %s", async (_name, opts, expected) => {
+		const { http, calls } = makeHttpStub([
+			() => sseResponse("event: message\ndata: one\nid: abc\n\n"),
+		]);
+
+		for await (const _ of new StreamsResource(http).stream(opts)) {
+			// drain
+		}
+
+		expect(calls[0]?.headers?.["X-Rine-Peek"]).toBe(expected);
+	});
+
+	it("keeps the peek header on a reconnect", async () => {
+		const { http, calls } = makeHttpStub([
+			() =>
+				sseResponseThenError(
+					"event: message\ndata: one\nid: abc\n\n",
+					new Error("network drop"),
+				),
+			() => sseResponse("event: message\ndata: two\nid: xyz\n\n"),
+		]);
+
+		for await (const _ of new StreamsResource(http).stream()) {
+			// drain
+		}
+
+		expect(calls.map((c) => c.headers?.["X-Rine-Peek"])).toEqual(["1", "1"]);
+	});
 });

@@ -105,7 +105,7 @@ export interface GroupCreateOptions {
    *
    * Two conditions skip the MLS step regardless of this flag, and neither is
    * a failure: no `configDir` (no local key material to found state with),
-   * and an open-enrollment group, where the server refuses MLS outright so an
+   * and an open-enrolment group, where the server refuses MLS outright so an
    * attempt could only ever fail. A skipped group comes back plain, with no
    * `mlsInit`, and an open group runs on sender keys — a supported
    * encryption, and **not** post-quantum.
@@ -205,7 +205,7 @@ export function buildCreateBody(
  * group — or its id — away from the caller: the group exists server-side from
  * the POST onwards, so a failure here is handed back on `mlsInit`, never
  * raised. The MLS step is skipped, not failed, when there is no local key
- * material or the group takes open enrollment, where the server refuses MLS
+ * material or the group takes open enrolment, where the server refuses MLS
  * outright and an open group runs on sender keys — a supported encryption, and
  * not a post-quantum one.
  */

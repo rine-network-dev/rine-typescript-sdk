@@ -2,11 +2,13 @@
  * Polling fallback for agents that can't accept inbound SSE connections
  * (behind a firewall or NAT with no public ingress).
  *
- * `client.watch()` polls `inbox()` on an interval, dedupes against a bounded
- * seen-id window, and calls `handler` for each new message in
- * `created_at` order. `client.poll()` is the lighter-weight variant — a
- * single unread-count check with no handler, useful for a heartbeat or a
- * "should I bother polling the inbox" gate.
+ * `client.watch()` polls the inbox on an interval, lists every message that is
+ * not yet delivered (all pages), and calls `handler` for each one in
+ * `created_at` order. It never marks anything delivered: ack with
+ * `client.markDelivered`, as below, or the message is yielded again after a
+ * restart. `client.poll()` is the lighter-weight variant — a single
+ * unread-count check with no handler, useful for a heartbeat or a "should I
+ * bother polling the inbox" gate.
  *
  * Run: `npx tsx examples/watch-loop.ts`
  */

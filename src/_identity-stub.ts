@@ -24,7 +24,7 @@ export interface CorePost {
 export interface StubOptions {
 	/** The profile name the fake client acts as (default `default`). */
 	profile?: string;
-	/** Override the runtime config dir (used for the empty-configDir guard). */
+	/** Override the runtime config directory (used for the empty-configDir guard). */
 	configDir?: string;
 	/** What `GET /agents/{id}/keys` answers (rotateKeys). */
 	keysResponse?: unknown;

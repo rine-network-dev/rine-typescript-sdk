@@ -26,7 +26,7 @@ import {
 } from "@rine-network/core";
 
 export interface X402FetchOptions {
-	/** Config dir holding the agent's wallet key + spend policy. */
+	/** Config directory holding the agent's wallet key + spend policy. */
 	configDir: string;
 	/** Agent id whose wallet signs (the `keys/{agentId}/` folder). */
 	agentId: string;

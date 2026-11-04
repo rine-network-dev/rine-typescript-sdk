@@ -273,7 +273,7 @@ export class GroupsResource {
 	 * founded with its roster known mints every invitee's ratchet-tree leaf
 	 * across a handful of commits instead of one commit each, forever.
 	 *
-	 * A founding roster mints real invitations under every enrollment policy,
+	 * A founding roster mints real invitations under every enrolment policy,
 	 * including the two where a later `invite` only nominates: at founding the
 	 * creator is the only member, so a vote would be a formality that approves
 	 * every row.
@@ -493,7 +493,7 @@ export class GroupsResource {
 	 * MLS group every newly invited agent gets a ratchet-tree leaf in one
 	 * commit, which is the difference between one O(N) commit and 32 of them.
 	 *
-	 * 🔴 **What an invite does depends on the group's enrollment policy.** On
+	 * 🔴 **What an invite does depends on the group's enrolment policy.** On
 	 * `closed` it mints an invitation the agent can spend, and on `open` it
 	 * mints none because none is needed. On `majority` and `unanimity` it
 	 * NOMINATES: the row it files is a pending join request the group's

@@ -8,13 +8,10 @@
  * that came out the bottom. A test that asserted the resource read `opts.peek`
  * would pass with the header wired nowhere.
  *
- * The negative half is the load-bearing half. A read consumes the row, and
- * there is no un-mark route, so a header wired on unconditionally would silently
- * stop every plain read from marking anything and an inbox would grow without
- * bound with no error anywhere to notice it. Absent is the untouched-behaviour
- * case, and absent is what is asserted — not `X-Rine-Peek: 0`, which the server
- * parses false and which would be equivalent on the wire but is not what the
- * default sends.
+ * Every by-id read now fetches as a peek (the server has no un-mark route, so
+ * it must not mark before this client has tried to open the row). A plain read
+ * then marks the row itself, in a second request, only once it has settled; the
+ * second half of this file pins that decision on the wire.
  *
  * `PEEK_HEADER` is imported from `@rine-network/core`, never retyped: the one
  * failure on this path that is silent rather than loud is a misspelled header
@@ -27,14 +24,19 @@ import { ACTING_AGENT_HEADER, PEEK_HEADER } from "@rine-network/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // The decrypt is not what this file is about: mocked so a fabricated envelope
-// needs no key material and no config directory on disk.
+// needs no key material and no config directory on disk. `decryptOutcome` picks
+// what the mock reports, per test.
+const opened = {
+	plaintext: '{"ok":true}',
+	verified: true,
+	verification_status: "verified" as const,
+	decrypt_error: null,
+};
+let decryptOutcome: Record<string, unknown> = opened;
 vi.mock("./resources/decrypt.js", () => ({
 	decryptEnvelope: vi.fn(async (opts: { msg: Record<string, unknown> }) => ({
 		...opts.msg,
-		plaintext: '{"ok":true}',
-		verified: true,
-		verification_status: "verified" as const,
-		decrypt_error: null,
+		...decryptOutcome,
 	})),
 }));
 
@@ -70,6 +72,12 @@ interface Harness {
 	client: InstanceType<typeof AsyncRineClient>;
 	/** Every GET the SDK layer issued, with the headers it declared. */
 	gets: { path: string; headers: Record<string, string> | undefined }[];
+	/** Every POST the SDK layer issued. */
+	posts: {
+		path: string;
+		body: unknown;
+		headers: Record<string, string> | undefined;
+	}[];
 }
 
 /**
@@ -77,7 +85,11 @@ interface Harness {
  * at the class it delegates to — so the whole resolve-then-read ladder above it
  * runs, from the option a caller passes.
  */
-function harness(agents: object[]): Harness {
+function harness(
+	agents: object[],
+	row: Record<string, unknown> = messageRow(),
+): Harness {
+	const posts: Harness["posts"] = [];
 	const gets: { path: string; headers: Record<string, string> | undefined }[] =
 		[];
 	vi.spyOn(SDKHttpClient.prototype, "getCoreHttpClient").mockReturnValue({
@@ -88,11 +100,19 @@ function harness(agents: object[]): Harness {
 		opts: { extraHeaders?: Record<string, string> } = {},
 	) => {
 		gets.push({ path, headers: opts.extraHeaders });
-		return messageRow();
+		return row;
+	}) as never);
+	vi.spyOn(SDKHttpClient.prototype, "post").mockImplementation((async (
+		path: string,
+		body: unknown,
+		opts: { extraHeaders?: Record<string, string> } = {},
+	) => {
+		posts.push({ path, body, headers: opts.extraHeaders });
+		return { marked: 1 };
 	}) as never);
 	// An explicit configDir so nothing resolves one off the filesystem.
 	const client = new AsyncRineClient({ configDir: "/tmp/rine-peek-read" });
-	return { client, gets };
+	return { client, gets, posts };
 }
 
 /** The one `GET /messages/{id}` a read issues. */
@@ -104,6 +124,7 @@ function theRead(h: Harness) {
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	decryptOutcome = opened;
 });
 
 describe("read({ peek: true })", () => {
@@ -162,22 +183,122 @@ describe("read({ peek: true })", () => {
 });
 
 describe("a plain read", () => {
-	it("sends no peek header at all", async () => {
+	it("fetches as a peek, so the server does not mark before the decrypt", async () => {
 		const h = harness([OPS]);
 
 		await h.client.read(MESSAGE_ID);
 
-		expect(theRead(h).headers).toEqual({ [ACTING_AGENT_HEADER]: OPS_ID });
-		// Absent, not a false spelling: this is byte-for-byte the request the
-		// SDK issued before peek existed.
-		expect(theRead(h).headers).not.toHaveProperty(PEEK_HEADER);
+		expect(theRead(h).headers).toEqual({
+			[ACTING_AGENT_HEADER]: OPS_ID,
+			[PEEK_HEADER]: "1",
+		});
 	});
 
-	it("sends no peek header when the caller asked for peek: false", async () => {
+	it("fetches as a peek when the caller asked for peek: false", async () => {
 		const h = harness([OPS]);
 
 		await h.client.read(MESSAGE_ID, { peek: false });
 
-		expect(theRead(h).headers).toEqual({ [ACTING_AGENT_HEADER]: OPS_ID });
+		expect(theRead(h).headers?.[PEEK_HEADER]).toBe("1");
+	});
+});
+
+const MARK_PATH = `/agents/${OPS_ID}/messages/mark-delivered`;
+
+/** What decrypt leaves on a row it could not open. */
+function unopened(status: string, error: string): Record<string, unknown> {
+	return {
+		plaintext: undefined,
+		verified: false,
+		verification_status: status,
+		decrypt_error: error,
+	};
+}
+
+describe("read() marks delivered only once the row has settled", () => {
+	it("marks an opened row with exactly one POST naming the reading agent", async () => {
+		const h = harness([OPS]);
+
+		await h.client.read(MESSAGE_ID);
+
+		expect(h.posts).toEqual([
+			{
+				path: MARK_PATH,
+				body: { message_ids: [MESSAGE_ID] },
+				headers: { [ACTING_AGENT_HEADER]: OPS_ID },
+			},
+		]);
+	});
+
+	it("leaves a sender-key row whose key has not arrived unmarked", async () => {
+		decryptOutcome = unopened("unverifiable", "sender key not available");
+		const h = harness([OPS], {
+			...messageRow(),
+			encryption_version: "sender-key-v1",
+		});
+
+		const msg = await h.client.read(MESSAGE_ID);
+
+		expect(msg.decrypt_error).toBe("sender key not available");
+		expect(h.posts).toEqual([]);
+	});
+
+	it("leaves a row this agent holds no keys for unmarked", async () => {
+		decryptOutcome = unopened("unverifiable", "no keys for agent");
+		const h = harness([OPS]);
+
+		await h.client.read(MESSAGE_ID);
+
+		expect(h.posts).toEqual([]);
+	});
+
+	it("does not mark an opened row when the caller asked for peek", async () => {
+		const h = harness([OPS]);
+
+		await h.client.read(MESSAGE_ID, { peek: true });
+
+		expect(h.posts).toEqual([]);
+	});
+
+	it("still returns the row, and warns, when the mark fails", async () => {
+		const h = harness([OPS]);
+		vi.spyOn(SDKHttpClient.prototype, "post").mockRejectedValue(
+			new Error("503 upstream"),
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const msg = await h.client.read(MESSAGE_ID);
+
+		expect(msg.plaintext).toBe('{"ok":true}');
+		expect(warn).toHaveBeenCalledWith(expect.stringContaining("503 upstream"));
+	});
+
+	it("lets a cancelled mark abort the read instead of warning", async () => {
+		const h = harness([OPS]);
+		const abort = Object.assign(new Error("aborted"), { name: "AbortError" });
+		vi.spyOn(SDKHttpClient.prototype, "post").mockRejectedValue(abort);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		await expect(h.client.read(MESSAGE_ID)).rejects.toBe(abort);
+
+		expect(warn).not.toHaveBeenCalled();
+	});
+
+	it("marks a row whose author was refused, which a later look cannot change", async () => {
+		decryptOutcome = unopened("invalid", "signature does not verify");
+		const h = harness([OPS]);
+
+		await h.client.read(MESSAGE_ID);
+
+		expect(h.posts.map((p) => p.path)).toEqual([MARK_PATH]);
+	});
+
+	it("marks a row that was never ciphertext", async () => {
+		decryptOutcome = unopened("not-ciphertext", "not encrypted");
+		const h = harness([OPS], { ...messageRow(), encryption_version: "none" });
+
+		await h.client.read(MESSAGE_ID);
+
+		expect(h.posts.map((p) => p.path)).toEqual([MARK_PATH]);
 	});
 });

@@ -452,6 +452,14 @@ export {
 export type { UnfoundedGroupRepair } from "./format/groups.js";
 
 // ---------------------------------------------------------------------------
+// Whether a decrypted row is finished and may be marked delivered: it opened,
+// it was never ciphertext, or its author was refused. Inbox tools filter the
+// ids they acknowledge with it.
+// ---------------------------------------------------------------------------
+
+export { isSettled } from "./resources/settled.js";
+
+// ---------------------------------------------------------------------------
 // Zod schemas (named exports, for advanced / testing use)
 // ---------------------------------------------------------------------------
 

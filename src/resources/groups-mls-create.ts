@@ -68,7 +68,7 @@ export type MlsInitOutcome = MlsInitLanded | MlsInitFailure;
 /**
  * Should a freshly-created group have its MLS state founded at all?
  *
- * Open-enrollment groups are exempt: the server refuses MLS there (403
+ * Open-enrolment groups are exempt: the server refuses MLS there (403
  * `mls_open_enrollment_disabled`), so an attempt could only ever fail. They run
  * over sender keys, which is a supported encryption and not a degraded one —
  * so the caller is told nothing, because nothing went wrong. Skipping is not

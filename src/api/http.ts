@@ -56,18 +56,18 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface SDKHttpClientOptions {
-  /** Path to the rine config directory (the runtime dir: profiles, leaf keys, token cache). */
+  /** Path to the rine config directory (the runtime directory: profiles, leaf keys, token cache). */
   configDir?: string;
   /**
    * Path to the owner directory holding `root.key`. Default: core's
    * `resolveOwnerDir()` (`RINE_OWNER_DIR`, else `~/.config/rine-owner`). A client
-   * whose owner dir has a root acts as the org; one without acts as the agent or
+   * whose owner directory has a root acts as the org; one without acts as the agent or
    * branch its profile names.
    */
   ownerDir?: string;
   /**
-   * Act only as the agent whose leaf keys the config dir holds. The client never
-   * reads an owner dir, so a `root.key` on the host cannot make it act as the org;
+   * Act only as the agent whose leaf keys the config directory holds. The client never
+   * reads an owner directory, so a `root.key` on the host cannot make it act as the org;
    * combining this with `ownerDir` throws a `ConfigError`.
    */
   agentOnly?: boolean;
@@ -210,11 +210,11 @@ export class SDKHttpClient {
   get apiUrl(): string {
     return this.resolveApiUrl();
   }
-  /** The owner dir: where `root.key` lives, never the runtime config dir. Unset for an agent-only client. */
+  /** The owner directory: where `root.key` lives, never the runtime config directory. Unset for an agent-only client. */
   get ownerDir(): string | undefined {
     return this._agentOnly ? undefined : (this._ownerDir ?? resolveCoreOwnerDir());
   }
-  /** Whether this client never reads an owner dir and only acts as an agent. */
+  /** Whether this client never reads an owner directory and only acts as an agent. */
   get agentOnly(): boolean {
     return this._agentOnly;
   }
@@ -236,7 +236,7 @@ export class SDKHttpClient {
   custodyDirs(): CustodyDirs {
     const dirs = this.dirs;
     if (dirs.agentOnly === true) {
-      throw new ConfigError("An agent-only client cannot mint or rotate agents: it holds no owner dir.");
+      throw new ConfigError("An agent-only client cannot mint or rotate agents: it holds no owner directory.");
     }
     return dirs;
   }

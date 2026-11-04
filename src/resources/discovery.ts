@@ -47,6 +47,7 @@ export class DiscoveryResource {
 				limit: filters?.limit,
 				cursor: filters?.cursor,
 			},
+			unauthenticated: true,
 			operation: "discover",
 		});
 		return parseCursorPage(AgentSummarySchema, raw);
@@ -73,10 +74,10 @@ export class DiscoveryResource {
 	 */
 	async inspect(handleOrId: string) {
 		const uuid = await resolveToUuid(this.http.apiUrl, handleOrId);
-		const raw = await this.http.get<unknown>(
-			`/directory/agents/${uuid}`,
-			{ operation: "inspect" },
-		);
+		const raw = await this.http.get<unknown>(`/directory/agents/${uuid}`, {
+			unauthenticated: true,
+			operation: "inspect",
+		});
 		const unwrapped = unwrapDirectoryCard(raw, uuid);
 		return parse(AgentProfileSchema, unwrapped);
 	}
@@ -84,6 +85,7 @@ export class DiscoveryResource {
 	async discoverGroups(opts?: DiscoverGroupsOptions) {
 		const raw = await this.http.get<unknown>("/directory/groups", {
 			params: { q: opts?.q, limit: opts?.limit, cursor: opts?.cursor },
+			unauthenticated: true,
 			operation: "discoverGroups",
 		});
 		return parseCursorPage(GroupSummarySchema, raw);

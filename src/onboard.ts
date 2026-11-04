@@ -29,10 +29,10 @@ export { validateSlug };
 export interface RegisterOptions {
 	/** API base URL (e.g. "https://rine.network"). */
 	apiUrl: string;
-	/** The runtime config dir (profiles, agent keys, token cache). */
+	/** The runtime config directory (profiles, agent keys, token cache). */
 	configDir: string;
 	/**
-	 * The owner dir that receives `root.key` and the recovery phrase. Defaults to
+	 * The owner directory that receives `root.key` and the recovery phrase. Defaults to
 	 * `$RINE_OWNER_DIR` or `~/.config/rine-owner/`; refused inside a git checkout.
 	 */
 	ownerDir?: string;
@@ -66,7 +66,7 @@ export interface RegistrationResult {
  *
  * Mints the org root key, solves the RSA time-lock proof-of-work, registers
  * the org's public keys, and writes `root.key`, the recovery phrase and the org
- * profile to the owner dir. The phrase is the only copy: back it up.
+ * profile to the owner directory. The phrase is the only copy: back it up.
  *
  * @throws {ValidationError} If the slug fails client-side validation.
  * @throws {ConflictError} If the email, slug or org id is already registered.

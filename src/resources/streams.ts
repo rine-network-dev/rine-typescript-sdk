@@ -8,7 +8,7 @@
  * - Full AbortSignal cancellation
  */
 
-import { nextReconnectBackoffSeconds } from "@rine-network/core";
+import { nextReconnectBackoffSeconds, withPeekHeader } from "@rine-network/core";
 import type { SDKHttpClient } from "../api/http.js";
 import type { RineEvent } from "../types.js";
 import { anySignal } from "../utils/abort.js";
@@ -35,6 +35,15 @@ export interface StreamOptions {
 	 * subsequent reconnects regardless of what the caller passed.
 	 */
 	lastEventId?: string;
+	/**
+	 * Stream without marking messages delivered (default `true`). The server
+	 * then leaves every streamed message `new`, so the caller acknowledges each
+	 * one it has handled with `markDelivered()`; a message it never acknowledges
+	 * is listed as new again, and a reconnect without a saved `lastEventId`
+	 * re-sends up to 200 of them. Pass `false` to have the server mark each
+	 * message delivered as it is sent.
+	 */
+	peek?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +71,7 @@ export class StreamsResource {
 	 * ```
 	 */
 	stream(opts: StreamOptions = {}): AsyncIterable<RineEvent> {
-		const { signal, agent, timeout, lastEventId } = opts;
+		const { signal, agent, timeout, lastEventId, peek = true } = opts;
 		const agentSegment = agent ? `/agents/${agent}` : "";
 
 		let combinedSignal: AbortSignal;
@@ -76,13 +85,14 @@ export class StreamsResource {
 			combinedSignal = neverAbortingSignal();
 		}
 
-		return this.connect(agentSegment, combinedSignal, lastEventId);
+		return this.connect(agentSegment, combinedSignal, lastEventId, peek);
 	}
 
 	private async *connect(
 		agentSegment: string,
 		signal: AbortSignal,
 		initialLastEventId: string | undefined,
+		peek: boolean,
 	): AsyncGenerator<RineEvent> {
 		let lastEventId: string | undefined = initialLastEventId;
 		let backoff = 1; // seconds
@@ -93,7 +103,7 @@ export class StreamsResource {
 		const seen = new SeenIds(500);
 
 		while (!signal.aborted) {
-			const headers: Record<string, string> = {};
+			const headers: Record<string, string> = withPeekHeader({}, peek);
 			if (lastEventId) headers["Last-Event-ID"] = lastEventId;
 
 			try {

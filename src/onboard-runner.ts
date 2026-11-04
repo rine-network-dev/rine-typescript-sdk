@@ -2,9 +2,9 @@
  * The out-of-band onboarding flow shared by the framework connectors' `onboard`
  * commands (`@rine-network/eve`, `@rine-network/mastra`).
  *
- * A ~30-60 s proof-of-work does not belong in an LLM turn, so this is a one-time
+ * The registration proof-of-work takes a while and does not belong in an LLM turn, so this is a one-time
  * command a human runs, never a tool. The org root and the 24-word recovery phrase
- * land in the owner dir, apart from the runtime config dir the agent reads; only
+ * land in the owner directory, apart from the runtime config directory the agent reads; only
  * the phrase file's path is printed, never the words. A connector supplies only
  * its own closing lines (how to point its runtime at the new identity).
  */
@@ -28,9 +28,9 @@ export interface OnboardOptions {
 	name: string;
 	/** API base URL; when omitted, `resolveApiUrl()` is used. */
 	apiUrl?: string;
-	/** Runtime config dir (profile, agent keys, token cache); `resolveConfigDir()` if omitted. */
+	/** Runtime config directory (profile, agent keys, token cache); `resolveConfigDir()` if omitted. */
 	configDir?: string;
-	/** Owner dir for `root.key` and the recovery phrase; the library default if omitted. */
+	/** Owner directory for `root.key` and the recovery phrase; the library default if omitted. */
 	ownerDir?: string;
 	/**
 	 * Handle-safe first-agent name (handle local-part); defaults to
@@ -80,7 +80,7 @@ export async function runOnboardFlow(
 	const configDir = opts.configDir ?? resolveConfigDir();
 
 	io.log(`Onboarding org "${opts.slug}" at ${apiUrl} …`);
-	io.log("Solving registration proof-of-work (this takes ~30–60 s) …");
+	io.log("Solving registration proof-of-work (it takes longer the more registrations came recently from this network) …");
 
 	let lastPct = -1;
 	const registration = await register({
@@ -124,7 +124,7 @@ export async function runOnboardFlow(
 	io.log(`Org ${registration.orgId}, verification words: ${registration.orgWords}`);
 	io.log(`Recovery phrase file: ${registration.phrasePath}`);
 	io.log(PHRASE_INSTRUCTION);
-	io.log(`Config dir: ${configDir}`);
+	io.log(`Config directory: ${configDir}`);
 	io.log(ownerDirNotice(dirname(registration.phrasePath)));
 	for (const line of closingLines) io.log(line);
 	return agent.handle;

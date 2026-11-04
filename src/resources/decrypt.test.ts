@@ -37,6 +37,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ParsedDecryptedMessage } from "./decrypt.js";
 
 const decryptGroupMessageMock = vi.fn();
+const decryptMessageMock = vi.fn();
 const processMlsWelcomesMock = vi.fn();
 const syncMlsGroupMock = vi.fn();
 
@@ -45,6 +46,7 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 	return {
 		...actual,
 		decryptGroupMessage: (...a: unknown[]) => decryptGroupMessageMock(...a),
+		decryptMessage: (...a: unknown[]) => decryptMessageMock(...a),
 		processMlsWelcomes: (...a: unknown[]) => processMlsWelcomesMock(...a),
 		syncMlsGroup: (...a: unknown[]) => syncMlsGroupMock(...a),
 	};
@@ -311,5 +313,63 @@ describe("decryptEnvelope — what the read says about the sync it ran", () => {
 		expect(replay.decrypt_error).toBeNull();
 		expect(replay.plaintext).toEqual(first.plaintext);
 		expect(replay.catch_up).toBeUndefined();
+	});
+});
+
+describe("decryptEnvelope — every row it does not open says why", () => {
+	// `read()` decides whether to mark a row delivered from `decrypt_error == null`
+	// as the positive "opened", so an arm that closes a row without setting it
+	// would get the row consumed. This pins each closing arm.
+	const direct = { ...mlsRow(), encryption_version: "hpke-hybrid-v2" };
+	const cases: [string, ParsedDecryptedMessage, () => void][] = [
+		[
+			"an empty payload",
+			{ ...mlsRow(), encrypted_payload: "" } as ParsedDecryptedMessage,
+			() => {},
+		],
+		[
+			"no authenticated sender",
+			{ ...mlsRow(), from_agent_id: null } as unknown as ParsedDecryptedMessage,
+			() => {},
+		],
+		[
+			"an unknown encryption version",
+			{ ...mlsRow(), encryption_version: "v9" } as ParsedDecryptedMessage,
+			() => {},
+		],
+		[
+			"a 1:1 decrypt that throws",
+			direct as ParsedDecryptedMessage,
+			() => decryptMessageMock.mockRejectedValue(new Error("no keys")),
+		],
+		[
+			"a 1:1 authenticity refusal",
+			direct as ParsedDecryptedMessage,
+			() =>
+				decryptMessageMock.mockResolvedValue({
+					plaintext: undefined,
+					verified: false,
+					verificationStatus: "invalid",
+				}),
+		],
+		[
+			"a group decrypt that throws",
+			mlsRow(),
+			() => decryptGroupMessageMock.mockRejectedValue(new Error("boom")),
+		],
+	];
+
+	it.each(cases)("sets decrypt_error for %s", async (_name, row, arrange) => {
+		arrange();
+
+		const result = await decryptEnvelope({
+			core,
+			configDir: CONFIG_DIR,
+			agentId: AGENT_ID,
+			msg: row,
+		});
+
+		expect(result.plaintext).toBeUndefined();
+		expect(result.decrypt_error).toEqual(expect.any(String));
 	});
 });

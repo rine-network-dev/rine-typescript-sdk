@@ -45,7 +45,7 @@ import type {
 /**
  * Why one requested agent id was not invited.
  *
- * `not_applicable` is the open-enrollment answer — an open group needs no
+ * `not_applicable` is the open-enrolment answer — an open group needs no
  * voucher, so there was nothing to mint and nothing went wrong. Render it with
  * `groupAdmissionSkipSentence`, not as the raw token.
  */

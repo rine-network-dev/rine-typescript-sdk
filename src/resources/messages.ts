@@ -64,6 +64,7 @@ import { groupAcceptsMlsSendOnly } from "../format/groups.js";
 import { anySignal } from "../utils/abort.js";
 import { CursorPage } from "../utils/cursor-page.js";
 import { decryptEnvelope } from "./decrypt.js";
+import { isSettled } from "./settled.js";
 
 // ---------------------------------------------------------------------------
 // MessagesResource
@@ -302,14 +303,11 @@ export class MessagesResource {
 			const core = this.http.getCoreHttpClient({ signal: op.signal });
 			const agentId = await this.resolveSenderId(core, opts.agent);
 
-			const raw = await this.http.post<{ marked?: number }>(
-				`/agents/${agentId}/messages/mark-delivered`,
-				{ message_ids: messageIds },
-				{
-					signal: op.signal,
-					operation: "markDelivered",
-					extraHeaders: actingAgentHeader(opts.agent, agentId),
-				},
+			const raw = await this.postMarkDelivered(
+				agentId,
+				messageIds,
+				op.signal,
+				actingAgentHeader(opts.agent, agentId),
 			);
 			return raw?.marked ?? 0;
 		} finally {
@@ -338,16 +336,19 @@ export class MessagesResource {
 	 * file (0600) in an owner-only directory, deleted when this agent leaves the
 	 * group ITSELF. Being removed by somebody else deletes nothing here: the
 	 * departing client is what runs the wipe, and a removed agent runs nothing,
-	 * so its copy outlives the removal until the config dir is destroyed.
-	 * It is plaintext at rest and widens what a stolen config dir yields;
+	 * so its copy outlives the removal until the config directory is destroyed.
+	 * It is plaintext at rest and widens what a stolen config directory yields;
 	 * a replay is re-verified against the sender the server names on THIS read,
 	 * never served on the strength of the first one. There is no off switch.
 	 *
-	 * **This read marks the message delivered whether or not it decrypts** — the
-	 * server holds no key and stamps the mark before this client has tried — and
-	 * there is no un-mark route, so the row leaves `inbox({ status: "new" })`,
-	 * `poll()` and SSE catch-up and stays fetchable only by id. `opts.peek`
-	 * declines that mark: everything else about the read is unchanged.
+	 * **This read marks the message delivered only once it has settled**: it
+	 * opened, carries no ciphertext, or its author was refused. The server holds
+	 * no key and has no un-mark route, so the fetch is always a peek and the
+	 * mark is a second request made here after the decrypt. A message this agent
+	 * cannot open yet (no keys, a sender key still in flight) stays `new`, so a
+	 * key fix or resync can still recover it. If the mark fails the message is
+	 * still returned and the failure is logged with `console.warn`.
+	 * `opts.peek` declines the mark even for a message that opens.
 	 */
 	async read(messageId: MessageUuid, opts: ReadOptions = {}) {
 		const op = this.beginOp(opts.signal);
@@ -363,18 +364,14 @@ export class MessagesResource {
 				// from the SDK default, and may be a bare name the header does not
 				// accept.
 				//
-				// A peek suppresses the mark and NOTHING else, the acting agent
-				// included: the row is still read as this agent, with this agent's
-				// keys, and a client that names nobody in a multi-agent org is
-				// still refused. Peek changes what the read does, never who it is
-				// as. Absent is today's behaviour exactly, which is why the key is
-				// omitted rather than sent as a false spelling.
+				// Always a peek: the mark is made below, once the row has settled.
+				// A peek suppresses the server's mark and NOTHING else, the acting
+				// agent included: the row is still read as this agent, with this
+				// agent's keys, and a client that names nobody in a multi-agent org
+				// is still refused.
 				signal: op.signal,
 				operation: "read",
-				extraHeaders: withPeekHeader(
-					{ [ACTING_AGENT_HEADER]: agentId },
-					opts.peek,
-				),
+				extraHeaders: withPeekHeader({ [ACTING_AGENT_HEADER]: agentId }, true),
 			});
 			const msg = parse(DecryptedMessageSchema, raw);
 
@@ -382,7 +379,7 @@ export class MessagesResource {
 			// (`AsyncRineClient.read<T>`). The resource returns a raw
 			// `DecryptedMessage` and the client-layer applies
 			// `parseMessagePlaintext` before returning.
-			return decryptEnvelope({
+			const opened = await decryptEnvelope({
 				core,
 				configDir: this.http.configDir,
 				agentId,
@@ -390,8 +387,48 @@ export class MessagesResource {
 				retrySenderKey: true,
 				memo: this.http.decryptMemo,
 			});
+			if (!opts.peek && isSettled(opened)) {
+				await this.markReadDelivered(messageId, agentId, op.signal);
+			}
+			return opened;
 		} finally {
 			op.clear();
+		}
+	}
+
+	/** The one `mark-delivered` request, for the public verb and for `read()`. */
+	private postMarkDelivered(
+		agentId: string,
+		messageIds: readonly string[],
+		signal: AbortSignal,
+		extraHeaders: Record<string, string> | undefined,
+	): Promise<{ marked?: number }> {
+		return this.http.post<{ marked?: number }>(
+			`/agents/${agentId}/messages/mark-delivered`,
+			{ message_ids: messageIds },
+			{ signal, operation: "markDelivered", extraHeaders },
+		);
+	}
+
+	/** Mark a message `read()` settled; a failed mark is a warning, never a failed read. */
+	private async markReadDelivered(
+		messageId: MessageUuid,
+		agentId: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		// Posted directly with the id this read already resolved: going through
+		// `markDelivered` would resolve the acting agent a second time (another
+		// `GET /agents`, another one-agent-fallback warning).
+		try {
+			await this.postMarkDelivered(agentId, [messageId], signal, {
+				[ACTING_AGENT_HEADER]: agentId,
+			});
+		} catch (err) {
+			// Cancellation is the caller's, not a failed mark: it bubbles out.
+			if (err instanceof Error && err.name === "AbortError") throw err;
+			console.warn(
+				`rine: read ${messageId} but could not mark it delivered; it stays new: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 	}
 

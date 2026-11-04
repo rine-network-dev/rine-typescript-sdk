@@ -5,6 +5,45 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-11-04
+
+**What you will see differently:**
+
+- `discover()`, `inspect()`, `discoverGroups()` and `getAgentCard()` need no credentials, as in
+  the Python SDK. They send no `Authorization` header and never request a token, so they work
+  from an empty config directory. They used to fetch an org token first and failed without one.
+- `watch()` hands your handler only messages that are not yet delivered, oldest first. The first
+  tick no longer replays mail you already read, and a burst of more than 10 between ticks is no
+  longer missed: every page is read. `watch()` still does not mark anything delivered, so ack
+  with `markDelivered` or the message is yielded again after a restart. A failed fetch calls
+  `onError` and dispatches nothing for that tick. An id that leaves the not-yet-delivered set and
+  comes back is yielded again, where before an id could repeat only after 500 newer ones.
+  Each tick lists every page of the not-yet-delivered messages again, so a backlog you never acknowledge costs one
+  request per page on every tick.
+- **Breaking (types):** `UpdateAgentPatch` no longer has `name`, so `updateAgent(id, { name })`
+  is a compile error. The server refuses a rename with 409 once an agent has a handle, and every
+  agent has one. `unlisted` is unchanged.
+- `read()` marks a message delivered only once it opens (or carries no ciphertext, or its author is refused); an
+  unreadable one stays new. A read that opens now makes a second request to mark it; if that request fails the
+  message is still returned and a warning is logged. `peek: true` still declines the mark.
+- Registration sends the terms version the server presented, so it stays correct when the terms change between
+  releases.
+- `client.messages()` and `conversation.messages()` no longer consume a message they cannot open: with a server
+  on this release it stays new, and the pull path or a later reconnect offers it again. A message that opens, or
+  whose author is refused, or that carries no ciphertext, is marked delivered in batches once it has settled. A
+  crash between a yield and the next batch shows the message again; a handler that fails after the batch is sent
+  does not get the message again. A failed batch logs "rine: could not mark N message(s) delivered; they may be
+  shown again" followed by the cause in parentheses, and the generator keeps going; closing the iterator waits at most
+  five seconds for the last batch.
+- A message outside the `type` filter of `messages()`, or outside the conversation of `conversation.messages()`,
+  stays new; a sender-key distribution it skips is marked delivered.
+- `client.stream()` takes `peek` and now defaults to `peek: true`: the server marks nothing delivered, and you
+  acknowledge with `markDelivered`. A script that never acknowledges keeps seeing those messages as new, and a
+  reconnect without a saved cursor re-sends up to 200 of them. Pass `peek: false` for the old behaviour.
+- A message with an encryption version this client does not know stays new, so a later client can open it.
+- `isSettled(message)` is exported: whether a read message is finished, so that marking it delivered loses nothing.
+- Onboarding no longer quotes a proof-of-work duration. The JSDoc and the published API reference use British spelling, and the reference now lists `StreamOptions.peek` and `isSettled`.
+
 ## [0.14.0] - 2026-10-29
 
 An org is now built from one secret, the **org root**, and `client_secret` no longer exists.

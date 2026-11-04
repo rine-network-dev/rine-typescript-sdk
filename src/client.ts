@@ -18,6 +18,7 @@ import {
 	type ParsedDecryptedMessage,
 	decryptEnvelope,
 } from "./resources/decrypt.js";
+import { createMessageIntake } from "./resources/message-intake.js";
 import {
 	type DiscoverGroupsOptions,
 	type DiscoveryFilters,
@@ -57,41 +58,29 @@ import {
 	type MessageRead,
 	type MessageTypeString,
 	type MessageUuid,
-	RESERVED_MESSAGE_TYPES,
 	type RineEvent,
 	type SendAndWaitResult,
 	type ThreadEntry,
 } from "./types.js";
 import { parseMessagePlaintext, validateOutbound } from "./utils/schema.js";
-import { SeenIds } from "./utils/seen-ids.js";
 import { sleepWithSignal } from "./utils/sleep.js";
 
 export type { StreamOptions };
-
-// `RESERVED_MESSAGE_TYPES` is imported from `./types.js` — single-source
-// definition used by `messages()`, `defineAgent`, and public re-exports.
-// Reserved types are filtered from `client.messages()` unconditionally
-// unless `includeReserved: true` is passed. The only entry —
-// `rine.v1.sender_key_distribution` — carries group key material, and
-// nothing ingests it off the stream: dropping the frame costs no key
-// material because `decryptEnvelope({ retrySenderKey: true })` fetches
-// pending distributions straight from the server when a group envelope
-// fails to open.
 
 // ---------------------------------------------------------------------------
 // Options
 // ---------------------------------------------------------------------------
 
 export interface RineClientOptions {
-	/** Runtime config dir: profiles, agent keys, token cache. */
+	/** Runtime config directory: profiles, agent keys, token cache. */
 	configDir?: string;
 	/**
-	 * Owner dir holding `root.key` (default `$RINE_OWNER_DIR`, else
-	 * `~/.config/rine-owner`). A client whose owner dir has a root acts as the org.
+	 * Owner directory holding `root.key` (default `$RINE_OWNER_DIR`, else
+	 * `~/.config/rine-owner`). A client whose owner directory has a root acts as the org.
 	 */
 	ownerDir?: string;
 	/**
-	 * Act only as the agent whose leaf keys the config dir holds: the owner dir is
+	 * Act only as the agent whose leaf keys the config directory holds: the owner directory is
 	 * never read, so a `root.key` on the host cannot make this client act as the
 	 * org. Combined with `ownerDir` it throws a `ConfigError`.
 	 */
@@ -192,16 +181,16 @@ export interface ReadOptions<T = unknown> {
 	 * Read without consuming the message — it stays new, and stays offered by
 	 * `inbox({ status: "new" })`, {@link AsyncRineClient.poll} and SSE catch-up.
 	 *
-	 * A plain read marks the message delivered **whether or not it decrypts**:
-	 * the server holds no key and stamps the mark before the client has tried,
-	 * and there is no un-mark route — so a row this agent cannot open yet is
-	 * offered exactly once and then only fetchable by id. This is what an
-	 * unattended loop wants for that row. The acting agent is still named and
-	 * still refused if it names nobody: only the mark is suppressed.
+	 * A plain read fetches as a peek and then marks the message delivered itself,
+	 * but only once it has settled: it opened, carries no ciphertext, or its
+	 * author was refused. A message this agent cannot open yet stays new either
+	 * way. `peek: true` declines the mark even for a message that opens, which is
+	 * what a loop that re-reads the same row wants. The acting agent is still
+	 * named and still refused if it names nobody.
 	 *
 	 * Riding on `X-Rine-Peek`, honoured by the server from the release this
 	 * option ships with. An older deployment ignores the header and consumes
-	 * the row as it always did.
+	 * the row at fetch, as it always did.
 	 */
 	peek?: boolean;
 	/**
@@ -248,7 +237,7 @@ export interface MessagesOptions<T = unknown> {
 	/**
 	 * Debug escape hatch — when true, reserved message types
 	 * (`rine.v1.sender_key_distribution` in v0.1) are yielded instead of
-	 * filtered. Unsupported; behavior may change between minor versions.
+	 * filtered. Unsupported; behaviour may change between minor versions.
 	 * Emits a one-shot `console.warn` on first use per process.
 	 */
 	includeReserved?: boolean;
@@ -261,6 +250,16 @@ export interface MessagesOptions<T = unknown> {
 	 * to `onError({ stage: 'schema' })`; the loop keeps running.
 	 */
 	schema?: StandardSchemaV1<unknown, T>;
+}
+
+/**
+ * `MessagesOptions` plus the conversation a scope pins: other conversations'
+ * rows are skipped before decrypt and stay new.
+ * @internal Set by `ConversationScope.messages()` only; stripped from the
+ * published declarations.
+ */
+export interface ScopedMessagesOptions<T = unknown> extends MessagesOptions<T> {
+	conversationId?: string;
 }
 
 let __includeReservedWarned = false;
@@ -579,6 +578,16 @@ export class AsyncRineClient implements AsyncDisposable {
 	 * `break`s out of the `for await` loop (triggering the generator's
 	 * `return()`, which closes the underlying SSE connection).
 	 *
+	 * Delivery: the stream runs in peek mode, so the server marks nothing
+	 * delivered as it sends. The iterator marks a message delivered, in
+	 * batches, once it has settled: it opened, it was never ciphertext, or its
+	 * sender signature was refused. A message it cannot open yet stays new, for
+	 * the pull path or a later reconnect to offer again. A message outside the
+	 * `type` filter stays new for another reader; a sender-key distribution
+	 * the iterator skips is marked delivered. A crash between a yield and the
+	 * next batch re-delivers that message; a handler that fails after the batch
+	 * is sent does not get the message again.
+	 *
 	 * Non-message events (`heartbeat`, `status`, `disconnect`) and reserved
 	 * message types are silently dropped. Crypto failures populate
 	 * `decrypt_error` on the yielded message rather than throwing — same
@@ -606,16 +615,20 @@ export class AsyncRineClient implements AsyncDisposable {
 		return this.messagesGenerator(opts);
 	}
 
-	private async *messagesGenerator<T>(
-		opts: MessagesOptions<T>,
-	): AsyncGenerator<DecryptedMessage<T>> {
+	/**
+	 * @internal Backs `messages()` and `ConversationScope.messages()`; the
+	 * conversation pin is the scope's alone.
+	 */
+	async *messagesGenerator<T>(
+		opts: ScopedMessagesOptions<T>,
+	): AsyncIterable<DecryptedMessage<T>> {
 		const signal = opts.signal ?? this._signal;
 
 		if (opts.includeReserved && !__includeReservedWarned) {
 			__includeReservedWarned = true;
 			console.warn(
 				"rine: client.messages({ includeReserved: true }) is a debug-only " +
-					"escape hatch; behavior may change between minor versions.",
+					"escape hatch; behaviour may change between minor versions.",
 			);
 		}
 
@@ -628,12 +641,21 @@ export class AsyncRineClient implements AsyncDisposable {
 			opts.agent,
 		);
 
-		const filterTypes = normalizeTypeFilter(opts.type);
-
 		const stream = this.streams.stream({
 			signal,
 			agent: agentId,
 			lastEventId: opts.lastEventId,
+			peek: true,
+		});
+
+		// Acks go out in batches. The client is built without the caller's
+		// signal so the flush in `finally` still runs after the caller aborts.
+		const intake = createMessageIntake({
+			core: this.http.getCoreHttpClient(),
+			agentId,
+			type: opts.type,
+			includeReserved: opts.includeReserved,
+			conversationId: opts.conversationId,
 		});
 
 		// One-shot warn for malformed message envelopes. Protocol drift or a
@@ -643,62 +665,68 @@ export class AsyncRineClient implements AsyncDisposable {
 		// not a process-wide one.
 		let warnedParseFailure = false;
 
-		for await (const ev of stream) {
-			if (signal?.aborted) return;
-			if (ev.type !== "message") continue;
+		try {
+			for await (const ev of stream) {
+				if (signal?.aborted) return;
+				if (ev.type === "heartbeat") void intake.acks.flush();
+				if (ev.type !== "message") continue;
 
-			// `ParsedDecryptedMessage` is the looser shape that `parse<T>`'s
-			// erased return type actually yields — see the JSDoc on the type
-			// in `decrypt.ts` for the Zod-inference story.
-			let envelope: ParsedDecryptedMessage;
-			try {
-				envelope = parse(DecryptedMessageSchema, JSON.parse(ev.data));
-			} catch (err) {
-				// The server is expected to JSON-encode a full MessageRead
-				// envelope per `_format_message_frame`; a frame that doesn't
-				// round-trip is either a server bug or a protocol drift.
-				// Skip rather than throwing — inbox/read do the same on
-				// crypto failure, and a thrown iterator kills the stream —
-				// but warn once per stream so the drift is observable.
-				if (!warnedParseFailure) {
-					warnedParseFailure = true;
-					const reason = err instanceof Error ? err.message : String(err);
-					console.warn(
-						`rine: client.messages() dropped malformed SSE envelope (${reason}); further drops on this stream are silent`,
-					);
+				// `ParsedDecryptedMessage` is the looser shape that `parse<T>`'s
+				// erased return type actually yields — see the JSDoc on the type
+				// in `decrypt.ts` for the Zod-inference story.
+				let envelope: ParsedDecryptedMessage;
+				try {
+					envelope = parse(DecryptedMessageSchema, JSON.parse(ev.data));
+				} catch (err) {
+					// The server is expected to JSON-encode a full MessageRead
+					// envelope per `_format_message_frame`; a frame that doesn't
+					// round-trip is either a server bug or a protocol drift.
+					// Skip rather than throwing — inbox/read do the same on
+					// crypto failure, and a thrown iterator kills the stream —
+					// but warn once per stream so the drift is observable.
+					if (!warnedParseFailure) {
+						warnedParseFailure = true;
+						const reason = err instanceof Error ? err.message : String(err);
+						console.warn(
+							`rine: client.messages() dropped malformed SSE envelope (${reason}); further drops on this stream are silent`,
+						);
+					}
+					continue;
 				}
-				continue;
-			}
 
-			if (!opts.includeReserved && RESERVED_MESSAGE_TYPES.has(envelope.type)) {
-				continue;
-			}
-			if (filterTypes && !filterTypes.has(envelope.type)) continue;
+				if (intake.skips(envelope)) continue;
 
-			const decrypted = await decryptEnvelope({
-				core,
-				configDir: this.http.configDir,
-				agentId,
-				msg: envelope,
-				// Same recovery as `read()`. A group message can reach the stream
-				// before its key material does (the sender-key distribution is a
-				// separate message; MLS state arrives via Welcome/commit), so a
-				// cold group row must refresh from the server and retry once
-				// rather than yielding a permanent "unknown sender key id".
-				retrySenderKey: true,
-				memo: this.http.decryptMemo,
-			});
-			// Inbound schema runs post-decrypt. Decrypt-failed envelopes
-			// bypass the schema check so callers can branch on
-			// `decrypt_error`. A successful-decrypt / schema-fail path throws
-			// `ValidationError` out of the generator and iteration ends;
-			// inside `defineAgent` the failure is caught and routed to
-			// `onError({ stage: 'schema' })`.
-			const typed =
-				opts.schema !== undefined && decrypted.decrypt_error == null
-					? await parseMessagePlaintext(decrypted, opts.schema)
-					: (decrypted as DecryptedMessage<T>);
-			yield typed;
+				const decrypted = await decryptEnvelope({
+					core,
+					configDir: this.http.configDir,
+					agentId,
+					msg: envelope,
+					// Same recovery as `read()`. A group message can reach the stream
+					// before its key material does (the sender-key distribution is a
+					// separate message; MLS state arrives via Welcome/commit), so a
+					// cold group row must refresh from the server and retry once
+					// rather than yielding a permanent "unknown sender key id".
+					retrySenderKey: true,
+					memo: this.http.decryptMemo,
+				});
+				// Settled rows are queued before the schema parse: a row that opened
+				// but fails the caller's schema is consumed, as it always was. A row
+				// that did not open stays new for the pull path or a later reconnect.
+				intake.settle(decrypted);
+				// Inbound schema runs post-decrypt. Decrypt-failed envelopes
+				// bypass the schema check so callers can branch on
+				// `decrypt_error`. A successful-decrypt / schema-fail path throws
+				// `ValidationError` out of the generator and iteration ends;
+				// inside `defineAgent` the failure is caught and routed to
+				// `onError({ stage: 'schema' })`.
+				const typed =
+					opts.schema !== undefined && decrypted.decrypt_error == null
+						? await parseMessagePlaintext(decrypted, opts.schema)
+						: (decrypted as DecryptedMessage<T>);
+				yield typed;
+			}
+		} finally {
+			await intake.acks.close();
 		}
 	}
 
@@ -833,10 +861,18 @@ export class AsyncRineClient implements AsyncDisposable {
 	}
 
 	/**
-	 * Watch for incoming messages via polling — calls `handler` on each new message.
+	 * Watch for incoming messages via polling — calls `handler` on each message
+	 * that is not yet delivered.
 	 *
 	 * Ergonomic surface for polling agents behind firewalls (where SSE is
 	 * unavailable). Returns an unsubscribe function.
+	 *
+	 * Every tick lists the agent's `status: "new"` mail across all pages and
+	 * dispatches it oldest first, each id once while it stays new. `watch()`
+	 * never marks anything delivered: ack with {@link markDelivered}, or the
+	 * message is yielded again after a restart. A failed fetch calls `onError`
+	 * and dispatches nothing that tick; a handler that throws goes to `onError`
+	 * and ends that tick, and the throwing message is not retried.
 	 */
 	async watch<M = DecryptedMessage>(
 		handler: (msg: M) => Promise<void> | void,
@@ -852,25 +888,30 @@ export class AsyncRineClient implements AsyncDisposable {
 		};
 		let stopped = false;
 
-		// Bounded seen-id dedup — ids are UUIDs, which are not lexicographically
-		// ordered, so the previous `msg.id > lastId` check was unsound. Each
-		// page is sorted by `created_at` (the real ordering signal) and
-		// deduped against the most recent 500 ids.
-		const seen = new SeenIds(500);
+		// Ids already dispatched. An id never returns to `new` once delivered,
+		// so pruning to the current new set after each successful fetch bounds
+		// this by the backlog and loses no dedup.
+		const seen = new Set<string>();
 
 		const tick = async () => {
 			while (!stopped) {
 				if (signal?.aborted) break;
 				try {
-					const page = await this.inbox({ limit: 10, signal });
-					const sorted = [...page.items].sort((a, b) => {
-						const ta = (a as { created_at?: string }).created_at ?? "";
-						const tb = (b as { created_at?: string }).created_at ?? "";
-						return ta.localeCompare(tb);
-					});
-					for (const msg of sorted) {
-						const id = (msg as { id: string }).id;
-						if (!seen.record(id)) continue;
+					const fresh: DecryptedMessage[] = [];
+					for await (const msg of this.inboxAll({
+						status: "new",
+						limit: 100,
+						signal,
+					})) {
+						fresh.push(msg);
+					}
+					fresh.sort(byCreatedAtThenId);
+					const current = new Set(fresh.map((msg) => msg.id));
+					for (const id of seen) if (!current.has(id)) seen.delete(id);
+					for (const msg of fresh) {
+						if (stopped || signal?.aborted) break;
+						if (seen.has(msg.id)) continue;
+						seen.add(msg.id);
 						await handler(msg as M);
 					}
 				} catch (err) {
@@ -1062,17 +1103,15 @@ export class AsyncRineClient implements AsyncDisposable {
 // ---------------------------------------------------------------------------
 
 /**
- * Normalize the `type` filter from `client.messages()` into a Set for O(1)
- * membership tests. Returns `undefined` when no filter was passed (caller
- * branches on `filterTypes !== undefined`).
+ * Oldest-first order for `watch()`: `created_at`, then `id` so rows sharing a
+ * timestamp dispatch in a stable order. ISO-8601 timestamps and UUIDs compare
+ * correctly as plain strings.
  */
-function normalizeTypeFilter(
-	filter: string | readonly string[] | undefined,
-): ReadonlySet<string> | undefined {
-	if (filter === undefined) return undefined;
-	if (typeof filter === "string") return new Set([filter]);
-	if (filter.length === 0) return undefined;
-	return new Set(filter);
+function byCreatedAtThenId(a: DecryptedMessage, b: DecryptedMessage): number {
+	if (a.created_at !== b.created_at)
+		return a.created_at < b.created_at ? -1 : 1;
+	if (a.id === b.id) return 0;
+	return a.id < b.id ? -1 : 1;
 }
 
 /**

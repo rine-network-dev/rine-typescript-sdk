@@ -78,7 +78,6 @@ export interface RotateKeysOptions {
 }
 
 export type UpdateAgentPatch = {
-	name?: string;
 	human_oversight?: boolean;
 	incoming_policy?: "accept_all" | "groups_only";
 	outgoing_policy?: "send_all" | "groups_only";
@@ -148,7 +147,7 @@ export class IdentityResource {
 	 * Create a new agent whose keys are derived from the org's custody.
 	 *
 	 * Flow:
-	 *   1. Load the branch's custody from the owner dir or the runtime config dir
+	 *   1. Load the branch's custody from the owner directory or the runtime config directory
 	 *      and derive the agent's generation-0 keys under a client-minted id.
 	 *   2. POST `/agents` with the id, the key material and the branch-signed
 	 *      certificate (the same body builder as `rotateKeys`).
@@ -290,6 +289,7 @@ export class IdentityResource {
 
 	async getAgentCard(agentId: AgentUuid) {
 		const raw = await this.http.get<unknown>(`/agents/${agentId}/card`, {
+			unauthenticated: true,
 			operation: "getAgentCard",
 		});
 		return parse(AgentCardSchema, raw);

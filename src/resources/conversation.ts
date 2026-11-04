@@ -41,6 +41,7 @@ import type {
 	InboxOptions,
 	MessagesOptions,
 	ReplyOptions,
+	ScopedMessagesOptions,
 } from "../client.js";
 import {
 	type AgentHandle,
@@ -240,7 +241,8 @@ export class ConversationScope {
 	private async *messagesGenerator<T>(
 		opts: ConversationMessagesOptions<T>,
 	): AsyncGenerator<DecryptedMessage<T>> {
-		const streamOpts: MessagesOptions<T> = {};
+		// Other conversations' mail is skipped before the ack, so it stays new.
+		const streamOpts: ScopedMessagesOptions<T> = { conversationId: this.id };
 		if (opts.type !== undefined) streamOpts.type = opts.type;
 		if (opts.signal !== undefined) streamOpts.signal = opts.signal;
 		if (opts.agent !== undefined) streamOpts.agent = opts.agent;
@@ -248,9 +250,7 @@ export class ConversationScope {
 			streamOpts.lastEventId = opts.lastEventId;
 		if (opts.schema !== undefined) streamOpts.schema = opts.schema;
 
-		for await (const msg of this.client.messages<T>(streamOpts)) {
-			if (msg.conversation_id === this.id) yield msg;
-		}
+		yield* this.client.messagesGenerator<T>(streamOpts);
 	}
 
 	// Manual page walk because we need per-item `conversation_id` filtering

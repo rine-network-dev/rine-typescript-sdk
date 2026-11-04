@@ -14,6 +14,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { ACTING_AGENT_HEADER } from "@rine-network/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DecryptedMessage, RineEvent } from "./types.js";
 
@@ -113,6 +114,7 @@ function labelOf(msg: DecryptedMessage): string {
 function makeClientWithEvents(streamEvents: RineEvent[]): {
 	client: InstanceType<typeof AsyncRineClient>;
 	streamCalls: Array<Record<string, unknown>>;
+	markDelivered: ReturnType<typeof vi.fn>;
 } {
 	const client = new AsyncRineClient({});
 	const streamCalls: Array<Record<string, unknown>> = [];
@@ -133,12 +135,13 @@ function makeClientWithEvents(streamEvents: RineEvent[]): {
 		.fn()
 		.mockResolvedValue(RECIPIENT_ID);
 
-	// Stub getCoreHttpClient — decryptEnvelope is mocked so the return
-	// value never actually gets called; just needs to exist.
+	// Stub getCoreHttpClient — decryptEnvelope is mocked, so the only call
+	// the bridge sees is the batched `mark-delivered` ack.
+	const markDelivered = vi.fn().mockResolvedValue({ marked: 1 });
 	// biome-ignore lint/suspicious/noExplicitAny: test override
-	(client as any).http.getCoreHttpClient = () => ({});
+	(client as any).http.getCoreHttpClient = () => ({ markDelivered });
 
-	return { client, streamCalls };
+	return { client, streamCalls, markDelivered };
 }
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
@@ -474,5 +477,273 @@ describe("client.messages()", () => {
 		}
 
 		expect(out).toHaveLength(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Delivery acknowledgement
+// ---------------------------------------------------------------------------
+
+function ackedIds(markDelivered: ReturnType<typeof vi.fn>): string[] {
+	return markDelivered.mock.calls.flatMap((call) => call[1] as string[]);
+}
+
+function leaveUnopened(over: Record<string, unknown> = {}) {
+	mockedDecryptEnvelope.mockImplementationOnce(async (opts) => ({
+		// biome-ignore lint/suspicious/noExplicitAny: mock input shape
+		...(opts as any).msg,
+		plaintext: undefined,
+		verified: false,
+		verification_status: "unverifiable" as const,
+		decrypt_error: "no keys",
+		...over,
+	}));
+}
+
+describe("client.messages() delivery acknowledgement", () => {
+	it("streams in peek mode", async () => {
+		const { client, streamCalls } = makeClientWithEvents([]);
+
+		await collect(client.messages());
+
+		expect(streamCalls[0]).toMatchObject({ peek: true });
+	});
+
+	it("acks an opened row for the reading agent, in one batch", async () => {
+		const a = messagePayload({ label: "a", type: "rine.v1.task_request" });
+		const b = messagePayload({ label: "b", type: "rine.v1.task_request" });
+		const { client, markDelivered } = makeClientWithEvents([
+			messageEvent(a),
+			messageEvent(b),
+		]);
+
+		await collect(client.messages());
+
+		expect(markDelivered).toHaveBeenCalledTimes(1);
+		expect(markDelivered.mock.calls[0]?.[0]).toBe(RECIPIENT_ID);
+		expect(markDelivered.mock.calls[0]?.[1]).toEqual([a.id, b.id]);
+		expect(markDelivered.mock.calls[0]?.[2]).toEqual({
+			[ACTING_AGENT_HEADER]: RECIPIENT_ID,
+		});
+	});
+
+	it("acks a row whose sender signature was refused", async () => {
+		const a = messagePayload({ label: "a", type: "rine.v1.task_request" });
+		leaveUnopened({
+			verification_status: "invalid",
+			decrypt_error: "invalid signature",
+		});
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(a)]);
+
+		await collect(client.messages());
+
+		expect(ackedIds(markDelivered)).toEqual([a.id]);
+	});
+
+	it("acks a row that was never ciphertext", async () => {
+		const a = messagePayload({
+			label: "a",
+			type: "rine.v1.task_request",
+			encryption_version: "none",
+		});
+		leaveUnopened({ decrypt_error: "not text" });
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(a)]);
+
+		await collect(client.messages());
+
+		expect(ackedIds(markDelivered)).toEqual([a.id]);
+	});
+
+	it("does not ack a row it could not decrypt", async () => {
+		const a = messagePayload({ label: "a", type: "rine.v1.task_request" });
+		leaveUnopened();
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(a)]);
+
+		const out = await collect(client.messages());
+
+		expect(out).toHaveLength(1);
+		expect(markDelivered).not.toHaveBeenCalled();
+	});
+
+	it("does not ack a row sealed under a version this client does not know", async () => {
+		const a = messagePayload({
+			label: "a",
+			type: "rine.v1.task_request",
+			encryption_version: "hpke-v9",
+		});
+		leaveUnopened({ decrypt_error: "unsupported encryption version" });
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(a)]);
+
+		await collect(client.messages());
+
+		expect(markDelivered).not.toHaveBeenCalled();
+	});
+
+	it("acks a reserved row it skips unopened", async () => {
+		const sk = messagePayload({
+			label: "sk",
+			type: "rine.v1.sender_key_distribution",
+		});
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(sk)]);
+
+		const out = await collect(client.messages());
+
+		expect(out).toEqual([]);
+		expect(mockedDecryptEnvelope).not.toHaveBeenCalled();
+		expect(ackedIds(markDelivered)).toEqual([sk.id]);
+	});
+
+	it("leaves a row outside the type filter new", async () => {
+		const other = messagePayload({ label: "o", type: "rine.v1.task_response" });
+		const { client, markDelivered } = makeClientWithEvents([
+			messageEvent(other),
+		]);
+
+		const out = await collect(client.messages({ type: "rine.v1.task_request" }));
+
+		expect(out).toEqual([]);
+		expect(markDelivered).not.toHaveBeenCalled();
+	});
+
+	it("leaves a frame that is not an envelope new", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { client, markDelivered } = makeClientWithEvents([
+			{ type: "message", data: "{not json", id: randomUUID() },
+		]);
+
+		await collect(client.messages());
+
+		expect(markDelivered).not.toHaveBeenCalled();
+	});
+
+	it("flushes on a heartbeat, ahead of the batch delay", async () => {
+		const a = messagePayload({ label: "a", type: "rine.v1.task_request" });
+		const b = messagePayload({ label: "b", type: "rine.v1.task_request" });
+		const { client, markDelivered } = makeClientWithEvents([
+			messageEvent(a),
+			{ type: "heartbeat", data: "" },
+			messageEvent(b),
+		]);
+		const sentWhenYielded: number[] = [];
+
+		for await (const _ of client.messages()) {
+			sentWhenYielded.push(ackedIds(markDelivered).length);
+		}
+
+		expect(sentWhenYielded).toEqual([0, 1]);
+		expect(ackedIds(markDelivered)).toEqual([a.id, b.id]);
+	});
+
+	it("acks a row that then fails the caller's schema", async () => {
+		const a = messagePayload({ label: "a", type: "rine.v1.task_request" });
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(a)]);
+		const schema = {
+			"~standard": {
+				version: 1,
+				vendor: "test",
+				validate: () => ({ issues: [{ message: "nope" }] }),
+			},
+		};
+
+		// biome-ignore lint/suspicious/noExplicitAny: test schema
+		await expect(collect(client.messages({ schema: schema as any }))).rejects.toThrow();
+
+		expect(ackedIds(markDelivered)).toEqual([a.id]);
+	});
+
+	it("warns and does not throw when the ack fails", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const a = messagePayload({ label: "a", type: "rine.v1.task_request" });
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(a)]);
+		markDelivered.mockRejectedValue(new Error("503"));
+
+		const out = await collect(client.messages());
+
+		expect(out).toHaveLength(1);
+		expect(warn).toHaveBeenCalledWith(
+			"rine: could not mark 1 message(s) delivered; they may be shown again (503)",
+		);
+	});
+
+	it("flushes what is queued when the consumer breaks out of the loop", async () => {
+		const a = messagePayload({ label: "a", type: "rine.v1.task_request" });
+		const b = messagePayload({ label: "b", type: "rine.v1.task_request" });
+		const { client, markDelivered } = makeClientWithEvents([
+			messageEvent(a),
+			messageEvent(b),
+		]);
+
+		for await (const _ of client.messages()) break;
+
+		expect(ackedIds(markDelivered)).toEqual([a.id]);
+	});
+
+	it("flushes what is queued after the caller's signal aborted", async () => {
+		const a = messagePayload({ label: "a", type: "rine.v1.task_request" });
+		const b = messagePayload({ label: "b", type: "rine.v1.task_request" });
+		const { client } = makeClientWithEvents([messageEvent(a), messageEvent(b)]);
+		const ac = new AbortController();
+		const sent: string[] = [];
+		// A core client built with the caller's signal rejects once it aborts, as
+		// the real one does; only a client built without it can still send.
+		// biome-ignore lint/suspicious/noExplicitAny: test override
+		(client as any).http.getCoreHttpClient = (o?: { signal?: AbortSignal }) => ({
+			markDelivered: async (_agent: string, ids: string[]) => {
+				if (o?.signal?.aborted) {
+					throw Object.assign(new Error("aborted"), { name: "AbortError" });
+				}
+				sent.push(...ids);
+				return { marked: ids.length };
+			},
+		});
+
+		for await (const _ of client.messages({ signal: ac.signal })) ac.abort();
+
+		expect(sent).toEqual([a.id]);
+	});
+
+	it("still acks a reserved row it yields when includeReserved is set", async () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		const sk = messagePayload({
+			label: "sk",
+			type: "rine.v1.sender_key_distribution",
+		});
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(sk)]);
+
+		const out = await collect(client.messages({ includeReserved: true }));
+
+		expect(out).toHaveLength(1);
+		expect(ackedIds(markDelivered)).toEqual([sk.id]);
+	});
+});
+
+describe("conversation.messages() delivery acknowledgement", () => {
+	const OTHER_CONV = randomUUID();
+
+	it("acks and yields a row of its own conversation", async () => {
+		const mine = messagePayload({ label: "mine", type: "rine.v1.task_request" });
+		const { client, markDelivered } = makeClientWithEvents([messageEvent(mine)]);
+
+		const out = await collect(client.conversation(CONV_ID).messages());
+
+		expect(out.map(labelOf)).toEqual(["mine"]);
+		expect(ackedIds(markDelivered)).toEqual([mine.id]);
+	});
+
+	it("skips a row of another conversation before decrypt and leaves it new", async () => {
+		const other = messagePayload({
+			label: "other",
+			type: "rine.v1.task_request",
+			conversation_id: OTHER_CONV,
+		});
+		const { client, markDelivered } = makeClientWithEvents([
+			messageEvent(other),
+		]);
+
+		const out = await collect(client.conversation(CONV_ID).messages());
+
+		expect(out).toEqual([]);
+		expect(mockedDecryptEnvelope).not.toHaveBeenCalled();
+		expect(markDelivered).not.toHaveBeenCalled();
 	});
 });

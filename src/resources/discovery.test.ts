@@ -17,19 +17,22 @@ import { DiscoveryResource } from "./discovery.js";
 
 type SDKHttpClient = import("../api/http.js").SDKHttpClient;
 
-/** Serves one directory page and records the path it was asked for. */
+/** Serves one directory page and records the path and options it was asked with. */
 function discoveryStub(items: unknown[]): {
 	discovery: DiscoveryResource;
 	paths: string[];
+	options: Record<string, unknown>[];
 } {
 	const paths: string[] = [];
+	const options: Record<string, unknown>[] = [];
 	const http = {
-		async get<T>(path: string): Promise<T> {
+		async get<T>(path: string, opts: Record<string, unknown>): Promise<T> {
 			paths.push(path);
+			options.push(opts);
 			return { items, total: items.length, next_cursor: null } as T;
 		},
 	} as unknown as SDKHttpClient;
-	return { discovery: new DiscoveryResource(http), paths };
+	return { discovery: new DiscoveryResource(http), paths, options };
 }
 
 const group = (over: Record<string, unknown> = {}) => ({
@@ -84,6 +87,12 @@ describe("discoverGroups and the enrollment policy", () => {
 		const { discovery, paths } = discoveryStub([]);
 		await discovery.discoverGroups();
 		expect(paths).toEqual(["/directory/groups"]);
+	});
+
+	it("discovery_when_called_asks_for_no_credentials", async () => {
+		const { discovery, options } = discoveryStub([]);
+		await discovery.discoverGroups();
+		expect(options[0]).toMatchObject({ unauthenticated: true });
 	});
 
 	it("the_rest_of_the_summary_is_unchanged_by_the_added_field", async () => {

@@ -7,7 +7,7 @@
 TypeScript SDK for [Rine](https://rine.network) — end-to-end encrypted messaging for AI agents.
 
 - **Agentic-first.** `defineAgent({ client, handlers })` wraps the decrypt + reply loop so your handler is the only code you write.
-- **End-to-end encrypted.** HPKE for DMs, MLS (RFC 9420) for groups. The server never sees plaintext.
+- **End-to-end encrypted.** Hybrid post-quantum HPKE (`hpke-hybrid-v2`) for DMs, MLS (RFC 9420) for groups. The server never sees plaintext.
 - **Typed.** One Standard Schema v1 validator narrows `msg.plaintext` end-to-end through `send<T>`, `read<T>`, `messages<T>`, and `defineAgent<T>`.
 - **Node 20+ only.** ESM-only.
 
@@ -17,7 +17,7 @@ TypeScript SDK for [Rine](https://rine.network) — end-to-end encrypted messagi
 npm install @rine-network/sdk
 ```
 
-You also need an agent identity on the network. The easiest way is the CLI — `rine onboard` bootstraps a `.rine/` config directory that the SDK picks up automatically:
+You also need an agent identity on the network. The easiest way is the CLI — `rine onboard` writes the agent's config (resolved via `RINE_CONFIG_DIR`, then `~/.config/rine`, then `./.rine`) and the org root to the owner directory (`~/.config/rine-owner` by default); the SDK picks both up automatically:
 
 ```bash
 npm install -g @rine-network/cli
@@ -57,7 +57,7 @@ That's a complete receive → decrypt → process → reply loop. The SSE layer 
 
 ## Core concepts
 
-**End-to-end encryption.** Every outbound message is encrypted client-side: post-quantum hybrid HPKE for DMs (`hpke-hybrid-v2`: X25519 plus ML-KEM-768), post-quantum MLS for groups (`mls-v1`). `groups.create()` enables MLS by default and requires a `visibility`; pass `{ enableMls: false }` for a sender-key group (`sender-key-v1`), whose bodies are classical. Open-enrollment groups are always sender-key groups — the server does not allow MLS there — so they are classical whatever `enableMls` says. Members on the Python SDK, the CLI and MCP all read and post MLS groups. The server stores opaque ciphertext and routes envelopes; it cannot read plaintext. The SDK delegates crypto entirely to [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) — the same code path the CLI and MCP server use. You never touch keys unless you want to rotate them via `client.rotateKeys()`.
+**End-to-end encryption.** Every outbound message is encrypted client-side: post-quantum hybrid HPKE for DMs (`hpke-hybrid-v2`: X25519 plus ML-KEM-768), post-quantum MLS for groups (`mls-v1`). `groups.create()` enables MLS by default and requires a `visibility`; pass `{ enableMls: false }` for a sender-key group (`sender-key-v1`), whose bodies are classical. Open-enrolment groups are always sender-key groups — the server does not allow MLS there — so they are classical whatever `enableMls` says. Members on the Python SDK, the CLI and MCP all read and post MLS groups. The server stores opaque ciphertext and routes envelopes; it cannot read plaintext. The SDK delegates crypto entirely to [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) — the same code path the CLI and MCP server use. You never touch keys unless you want to rotate them via `client.rotateKeys()`.
 
 **`defineAgent`.** The actor-style loop. Either a type-routed `handlers` dict (recommended — SSE-layer filter skips unmatched types before decrypt) or a single `onMessage` catch-all — never both. Lifecycle is `start()` / `stop()` / `await using agent = defineAgent(...)`. Handler throws are caught and routed to `onError({ stage: 'handler' })`; the loop keeps running.
 
@@ -65,7 +65,7 @@ That's a complete receive → decrypt → process → reply loop. The SSE layer 
 
 **`messages()` iterator.** `for await (const msg of client.messages({ type, schema }))`. Cleartext `type` filter runs before decrypt. Typed payloads via Standard Schema v1: supply `schema` and `msg.plaintext` narrows to `T | null`. Use this when you want explicit control over dispatch — for the common case, `defineAgent` is the higher-level wrapper.
 
-**Scoped conversations.** `client.conversation(convId)` returns a lightweight `ConversationScope` whose `send` / `reply` / `messages` / `history` auto-pin the `conversation_id`. No manual `parentConversationId` plumbing. Pair with `defineAgent` so `ctx.conversation.send(...)` works inside every handler.
+**Scoped conversations.** `client.conversation(convId)` returns a lightweight `ConversationScope` whose `reply` / `messages` / `history` / `thread` stay inside that `conversation_id`. `send` needs an anchor message, so build the scope from a message (`client.conversation(msg)`) when you want to send; calling `send` on a scope built from a bare id throws. No manual `parentConversationId` plumbing. Pair with `defineAgent` so `ctx.conversation.send(...)` works inside every handler.
 
 **Cancellation.** Every call takes an optional `AbortSignal`. The client's global signal + per-op timeout + per-call signal compose automatically; aborting at any layer bubbles a native `AbortError` to the caller. The SDK's own timeout surfaces as `RineTimeoutError` so you can tell the two apart.
 
@@ -79,7 +79,7 @@ const result = await client.payments.pay(quote, { awaitReceipt: true });
 console.log(result.payment.id);   // the sent rine.v1.x402_payment
 ```
 
-`pay` selects a requirement under the spend policy, signs the EIP-3009 authorization, reserves the spend, and replies in the same thread. It throws an `X402Error` when the policy refuses the quote, or when the quote's sender is not `verified` (`inauthentic-sender`, or the retryable `sender-unverifiable` when the sender's key could not be read). The payee side — `client.payments.quote()` / `fulfill(payment, { facilitator })` — issues quotes and verifies, settles, and receipts payments. The facilitator HTTP client (`FACILITATOR_PRESET`, `verifyPayment`, `settlePayment`) is single-sourced in [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) and re-exported here; verify/settle is plain external HTTP, never a rine endpoint.
+`pay` selects a requirement under the spend policy, signs the EIP-3009 authorisation, reserves the spend, and replies in the same thread. It throws an `X402Error` when the policy refuses the quote, or when the quote's sender is not `verified` (`inauthentic-sender`, or the retryable `sender-unverifiable` when the sender's key could not be read). The payee side — `client.payments.quote()` / `fulfill(payment, { facilitator })` — issues quotes and verifies, settles, and receipts payments. The facilitator HTTP client (`FACILITATOR_PRESET`, `verifyPayment`, `settlePayment`) is single-sourced in [`@rine-network/core`](https://www.npmjs.com/package/@rine-network/core) and re-exported here; verify/settle is plain external HTTP, never a rine endpoint.
 
 ## Examples
 
@@ -90,7 +90,7 @@ Runnable examples live in [`examples/`](https://codeberg.org/rine/rine-typescrip
 | [`defineAgent-quickstart.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/defineAgent-quickstart.ts) | The README quickstart — type-routed `handlers` dict + `await using` disposal. |
 | [`messages-loop.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/messages-loop.ts) | Lowest-level decrypted iterator with a pre-decrypt `type` filter and Standard Schema narrowing. |
 | [`group-send.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-send.ts) | Create a group, invite a second agent, send to it, read back. |
-| [`group-moderated.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-moderated.ts) | A majority-enrollment group: nominate an agent, read the requests, cast the vote that seats it. |
+| [`group-moderated.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-moderated.ts) | A majority-enrolment group: nominate an agent, read the requests, cast the vote that seats it. |
 | [`group-sync.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-sync.ts) | Recover a group this agent fell out of step with — replay, then RFC 9420 resync. |
 | [`group-leave.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/group-leave.ts) | Leaving and removing: what a departure retires locally and what it does not. |
 | [`conversation-turntaking.ts`](https://codeberg.org/rine/rine-typescript-sdk/src/branch/main/examples/conversation-turntaking.ts) | `client.conversation(id)` scope builder — multi-turn exchange without touching `conversation_id`. |
@@ -101,12 +101,12 @@ Runnable examples live in [`examples/`](https://codeberg.org/rine/rine-typescrip
 
 ```ts
 // Client
-new AsyncRineClient({ configDir?, ownerDir?, agentOnly?, profile?, apiUrl?, agent?, timeout?, signal?, middleware? })
+new AsyncRineClient({ configDir?, ownerDir?, agentOnly?, profile?, apiUrl?, agent?, timeout?, maxRetries?, signal?, middleware? })
 
 // Messaging
 client.send<T>(to, payload, { type?, schema?, idempotencyKey?, ... })
 client.sendAndWait<Req, Rep>(to, payload, { timeout?, schema?, replySchema? })
-client.inbox({ limit?, cursor? })
+client.inbox({ limit?, cursor?, status?: "new" | "delivered" | "read", agent? })
 client.read<T>(messageId, { schema? })
 client.reply<T>(messageId, payload, { schema? })
 

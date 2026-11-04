@@ -254,32 +254,32 @@ describe("ConversationScope.reply", () => {
 // ---------------------------------------------------------------------------
 
 describe("ConversationScope.messages", () => {
-	it("yields only messages whose conversation_id matches the scope id", async () => {
+	it("pins the scope's conversation id on the stream and yields what it yields", async () => {
 		const client = new AsyncRineClient({});
 		const MATCH = "conv-xyz";
-		const other = randomUUID();
-
 		const pushed: DecryptedMessage[] = [
 			makeDecrypted({ conversation_id: MATCH, metadata: { n: 1 } }),
-			makeDecrypted({ conversation_id: other, metadata: { n: 2 } }),
 			makeDecrypted({ conversation_id: MATCH, metadata: { n: 3 } }),
-			makeDecrypted({ conversation_id: other, metadata: { n: 4 } }),
-			makeDecrypted({ conversation_id: MATCH, metadata: { n: 5 } }),
 		];
-		vi.spyOn(client, "messages").mockReturnValue(asyncIter(pushed));
+		const messagesSpy = vi
+			.spyOn(client, "messagesGenerator")
+			.mockReturnValue(asyncIter(pushed));
 
-		const conv = client.conversation(MATCH);
 		const seen: unknown[] = [];
-		for await (const msg of conv.messages()) {
+		for await (const msg of client.conversation(MATCH).messages()) {
 			seen.push((msg.metadata as { n: number }).n);
 		}
-		expect(seen).toEqual([1, 3, 5]);
+
+		expect(seen).toEqual([1, 3]);
+		expect(messagesSpy.mock.calls[0]?.[0]).toMatchObject({
+			conversationId: MATCH,
+		});
 	});
 
-	it("forwards signal and type filter to client.messages()", async () => {
+	it("forwards signal and type filter to the message generator", async () => {
 		const client = new AsyncRineClient({});
 		const messagesSpy = vi
-			.spyOn(client, "messages")
+			.spyOn(client, "messagesGenerator")
 			.mockReturnValue(asyncIter([]));
 
 		const conv = client.conversation("conv-xyz");
@@ -307,7 +307,7 @@ describe("ConversationScope.messages", () => {
 	it("does NOT set MessagesOptions.includeReserved — scope filter is conv-id-only", async () => {
 		const client = new AsyncRineClient({});
 		const messagesSpy = vi
-			.spyOn(client, "messages")
+			.spyOn(client, "messagesGenerator")
 			.mockReturnValue(asyncIter([]));
 
 		const conv = client.conversation("conv-xyz");
@@ -329,7 +329,7 @@ describe("ConversationScope.messages", () => {
 		const ac = new AbortController();
 
 		// A stream that honours the caller's abort signal the same way the
-		// real `client.messages()` does — returns early when the signal
+		// real message generator does — returns early when the signal
 		// fires. The conversation scope trusts the for-await to exit; this
 		// test pins that contract.
 		async function* abortingStream(): AsyncGenerator<DecryptedMessage> {
@@ -337,7 +337,7 @@ describe("ConversationScope.messages", () => {
 			if (ac.signal.aborted) return;
 			yield makeDecrypted({ conversation_id: MATCH, metadata: { n: 2 } });
 		}
-		vi.spyOn(client, "messages").mockReturnValue({
+		vi.spyOn(client, "messagesGenerator").mockReturnValue({
 			[Symbol.asyncIterator]: () => abortingStream(),
 		});
 

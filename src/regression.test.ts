@@ -746,6 +746,7 @@ describe("read() — single-message decryption", () => {
 		);
 		expect(read?.opts?.extraHeaders).toEqual({
 			"X-Rine-Agent": SENDER_UUID,
+			"X-Rine-Peek": "1",
 		});
 	});
 });
@@ -1362,6 +1363,8 @@ describe("inspect() — handle resolution", () => {
 		// should use that resolved UUID, not the raw handle.
 		const getCall = calls.find((c) => c.method === "GET");
 		expect(getCall?.path).toBe(`/directory/agents/${UUID}`);
+		// The directory is public: the read carries no credentials.
+		expect(getCall?.opts).toMatchObject({ unauthenticated: true });
 		// And resolveToUuid must have been called with the handle as input.
 		expect(core.resolveToUuid).toHaveBeenCalledWith(
 			expect.any(String),
