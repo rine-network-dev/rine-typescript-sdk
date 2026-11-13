@@ -17,7 +17,6 @@
  * the voucher exists, the leaf does not yet.
  */
 
-import { GROUP_ADMISSION_SKIP_REASONS } from "@rine-network/core";
 import { z } from "zod";
 import { parse } from "../api/adapters.js";
 import { GroupReadSchema } from "../types.js";
@@ -27,8 +26,7 @@ import type { GroupRead } from "../types.js";
  * The types and the reason vocabulary come from `@rine-network/core`, which is
  * where every rine TypeScript surface can reach them — the CLI and the MCP
  * server depend on core and not on this SDK. This module owns the **parser**;
- * it does not own a second copy of the shape, and the enum below is built from
- * core's tuple so the two can never disagree about what a reason is.
+ * it does not own a second copy of the shape or of the reason vocabulary.
  */
 export type {
   GroupAdmissionEntry,
@@ -43,15 +41,20 @@ import type {
 } from "@rine-network/core";
 
 /**
- * Why one requested agent id was not invited.
+ * Why one requested agent id was not invited: a token this client knows, or
+ * the raw string of one it does not.
+ *
+ * Deliberately a `z.string()` and not a `z.enum`: `z.enum` rejects the whole
+ * parse on a token it was not told about, so a server that gains a reason
+ * (`org_rule` was one) would make an older client throw away a report for a
+ * call the server already carried out. `groupAdmissionSkipSentence` quotes an
+ * unknown token back.
  *
  * `not_applicable` is the open-enrolment answer — an open group needs no
  * voucher, so there was nothing to mint and nothing went wrong. Render it with
  * `groupAdmissionSkipSentence`, not as the raw token.
  */
-export const GroupAdmissionSkipReasonSchema = z.enum(
-  GROUP_ADMISSION_SKIP_REASONS,
-);
+export const GroupAdmissionSkipReasonSchema = z.string();
 
 /**
  * What happened to one requested agent id.

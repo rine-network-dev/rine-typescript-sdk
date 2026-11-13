@@ -47,7 +47,9 @@ vi.mock("@rine-network/core", async (importOriginal) => {
 
 const { GroupsResource, mlsAdmissionSkipSentence } =
   await import("./groups.js");
-const { notAnMlsGroupResume } = await import("@rine-network/core");
+const { groupAdmissionSkipSentence, notAnMlsGroupResume } = await import(
+  "@rine-network/core"
+);
 
 afterEach(() => {
   vi.clearAllMocks();
@@ -421,5 +423,39 @@ describe("GroupsResource.listRequests — the outstanding filter", () => {
     await groups.listRequests(GROUP_ID, { outstanding: "live" });
 
     expect(calls[0]?.params).toEqual({ outstanding: "live" });
+  });
+});
+
+describe("GroupsResource.invite — a reason this client may not know", () => {
+  const invite = async (reason: string) => {
+    const { http } = makeHttp((call) =>
+      call.method === "POST"
+        ? {
+            invited: 0,
+            skipped: 1,
+            entries: [{ agent_id: A, status: "skipped", reason }],
+          }
+        : group(),
+    );
+    return new GroupsResource(http, makeMessages()).invite(GROUP_ID, [A, B]);
+  };
+
+  it("keeps org_rule and says the group-rule clause, not the token", async () => {
+    const report = await invite("org_rule");
+
+    expect(report.entries[0]?.reason).toBe("org_rule");
+    expect(groupAdmissionSkipSentence("org_rule")).toMatch(
+      /^refused by an organisation's group rule/,
+    );
+  });
+
+  it("parses an unknown token and quotes it back instead of throwing the report away", async () => {
+    const report = await invite("some_future_reason");
+
+    expect(report.skipped).toBe(1);
+    expect(report.entries[0]?.reason).toBe("some_future_reason");
+    expect(groupAdmissionSkipSentence(report.entries[0]?.reason)).toBe(
+      "reason not recognised by this client: some_future_reason",
+    );
   });
 });

@@ -281,13 +281,16 @@ export async function decryptEnvelope(
 					} else {
 						// The group id is what lets a re-admitted member take key
 						// material again: the retirement a leave wrote is spent inside
-						// this scan, and only for the group named here.
+						// this scan, and only for the group named here. Naming the key
+						// and its sender is what lets a repeat miss hit the negative
+						// cache instead of listing the inbox again.
 						await fetchAndIngestPendingSKDistributions(
 							core,
 							configDir,
 							agentId,
-							undefined,
+							unknownSenderKeyId(firstErr) ?? undefined,
 							msg.group_id,
+							fromAgentId,
 						);
 					}
 					result = await decryptGroupMessage(

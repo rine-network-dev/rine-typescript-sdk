@@ -37,6 +37,7 @@ const {
 	GroupAuthenticityError,
 	MLS_ERR_GROUP_INACTIVE,
 	SENDER_KEY_UNAVAILABLE_CODE,
+	SenderKeyUnavailableError,
 	UNKNOWN_SENDER_KEY_CLAUSE,
 	mlsReadRefusal,
 	sdkSyncRemedy,
@@ -197,6 +198,63 @@ describe("group decrypt refusal under retrySenderKey", () => {
 		expect(result.decrypt_error).not.toContain("unknown sender key id");
 		// Still one recovery attempt, and still no throw out of the SDK.
 		expect(fetchAndIngestPendingSKDistributionsMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("test_sender_key_row_when_the_key_is_missing_then_the_scan_is_told_which_key_and_whose", async () => {
+		// The scan can only answer a repeat miss from its negative cache if it
+		// is told which key was missing and who sent it.
+		const missingKeyId = "88888888-8888-4888-8888-888888888888";
+		decryptGroupMessageMock.mockRejectedValueOnce(
+			new Error(`${UNKNOWN_SENDER_KEY_CLAUSE}${missingKeyId}`),
+		);
+		fetchAndIngestPendingSKDistributionsMock.mockResolvedValueOnce(1);
+		decryptGroupMessageMock.mockResolvedValueOnce({
+			plaintext: "{}",
+			verified: true,
+			verificationStatus: "verified",
+		});
+
+		await decryptEnvelope({
+			core,
+			configDir: "/nonexistent",
+			agentId: AGENT_ID,
+			msg: groupRow("sender-key-v1"),
+			retrySenderKey: true,
+		});
+
+		expect(fetchAndIngestPendingSKDistributionsMock).toHaveBeenCalledWith(
+			core,
+			"/nonexistent",
+			AGENT_ID,
+			missingKeyId,
+			GROUP_ID,
+			SENDER_ID,
+		);
+	});
+
+	it("test_sender_key_row_when_the_negative_cache_answers_then_it_is_the_typed_final_answer", async () => {
+		// A cache hit comes out of the scan as a throw. It must end in the same
+		// typed code as a scan that came back empty, with no second decrypt.
+		const missingKeyId = "99999999-9999-4999-8999-999999999999";
+		decryptGroupMessageMock.mockRejectedValueOnce(
+			new Error(`${UNKNOWN_SENDER_KEY_CLAUSE}${missingKeyId}`),
+		);
+		fetchAndIngestPendingSKDistributionsMock.mockRejectedValueOnce(
+			new SenderKeyUnavailableError(missingKeyId, GROUP_ID),
+		);
+
+		const result = await decryptEnvelope({
+			core,
+			configDir: "/nonexistent",
+			agentId: AGENT_ID,
+			msg: groupRow("sender-key-v1"),
+			retrySenderKey: true,
+		});
+
+		expect(result.plaintext).toBeUndefined();
+		expect(result.decrypt_error_code).toBe(SENDER_KEY_UNAVAILABLE_CODE);
+		expect(result.decrypt_error).toContain(missingKeyId);
+		expect(decryptGroupMessageMock).toHaveBeenCalledTimes(1);
 	});
 
 	it("test_sender_key_row_when_the_retry_fails_otherwise_then_the_words_are_unchanged", async () => {

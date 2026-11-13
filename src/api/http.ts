@@ -226,6 +226,10 @@ export class SDKHttpClient {
   get localOrgId(): string | undefined {
     return this.auth()?.orgId;
   }
+  /** Whether a principal is configured, so a public read may carry its bearer (`GET /agents/{id}/card`). */
+  get hasCredentials(): boolean {
+    return this.auth() !== undefined;
+  }
   get dirs(): AuthDirs {
     const ownerDir = this.ownerDir;
     return ownerDir === undefined

@@ -2,13 +2,18 @@
  * SSE streaming resource — /agents/{id}/stream with auto-reconnect.
  *
  * Delivers AsyncIterable<RineEvent> with:
- * - Exponential backoff on disconnect (cap: 30s)
+ * - Exponential backoff on an error (cap: 30s), a one-second pause after a clean server end
+ * - Only a revoked agent ends the stream: the error that says so is thrown
  * - Last-Event-ID resume after reconnect
  * - Heartbeat events during quiet periods
  * - Full AbortSignal cancellation
  */
 
-import { nextReconnectBackoffSeconds, withPeekHeader } from "@rine-network/core";
+import {
+	isPrincipalRevokedError,
+	nextReconnectBackoffSeconds,
+	withPeekHeader,
+} from "@rine-network/core";
 import type { SDKHttpClient } from "../api/http.js";
 import type { RineEvent } from "../types.js";
 import { anySignal } from "../utils/abort.js";
@@ -134,11 +139,17 @@ export class StreamsResource {
 					yield event;
 				}
 
-				// Stream ended normally
+				// The server ended the stream cleanly: a suspend, its own heartbeat limit
+				// or a restart. It sends no reason, so the stream reconnects after the
+				// base pause; an agent that was revoked is refused on that reconnect and
+				// ends the generator in the catch below.
 				yield { type: "disconnect", data: "stream ended" };
-				break;
+				await sleepWithSignal(backoff * 1000, signal);
 			} catch (err) {
 				if (signal.aborted) break;
+				// A revoked agent never comes back: end the generator with the reason
+				// instead of retrying forever or returning as if the stream had finished.
+				if (isPrincipalRevokedError(err)) throw err;
 
 				// Exponential backoff before reconnect
 				backoff = nextReconnectBackoffSeconds(backoff);

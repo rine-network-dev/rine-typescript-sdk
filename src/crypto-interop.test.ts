@@ -680,6 +680,7 @@ describe("crypto interop — repeat group decrypt", () => {
     const result = {
       plaintext: '{"n":1}',
       senderKid: `rine:${SENDER_ID}`,
+      verifyingKey: null,
       verified: true,
       verificationStatus: "verified" as const,
     };
@@ -696,6 +697,7 @@ describe("crypto interop — repeat group decrypt", () => {
     const result = {
       plaintext: '{"n":1}',
       senderKid: `rine:${SENDER_ID}`,
+      verifyingKey: null,
       verified: true,
       verificationStatus: "verified" as const,
     };
@@ -721,6 +723,7 @@ describe("crypto interop — repeat group decrypt", () => {
     const result = {
       plaintext: '{"n":1}',
       senderKid: `rine:${SENDER_ID}`,
+      verifyingKey: null,
       verified: true,
       verificationStatus: "verified" as const,
     };

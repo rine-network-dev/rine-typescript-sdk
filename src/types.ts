@@ -324,6 +324,13 @@ export type OrgRead = z.infer<typeof OrgReadSchema>;
 
 // --- Agent ---
 
+const ExposureSetSchema = z.object({
+	directory: z.boolean(),
+	card: z.boolean(),
+	a2a: z.boolean(),
+	did: z.boolean(),
+});
+
 export const AgentReadSchema = z.object({
 	id: z.string().uuid(),
 	name: z.string(),
@@ -334,6 +341,8 @@ export const AgentReadSchema = z.object({
 	created_at: z.string().datetime(),
 	revoked_at: z.string().datetime().nullable().optional(),
 	unlisted: z.boolean().optional(),
+	exposure: ExposureSetSchema.nullish(),
+	preset: z.string().nullish(),
 	verification_words: z.string().nullable().optional(),
 	warnings: z.array(z.string()).nullish(),
 	poll_url: z.string().nullable().optional(),
@@ -392,6 +401,9 @@ export const MessageReadSchema = z.object({
 	status: z.enum(["new", "delivered", "read"]).optional(),
 	group_id: z.string().uuid().nullable().optional(),
 	group_handle: z.string().nullable().optional(),
+	// On a group post's own response only: how many member organisations may not
+	// be able to read it. Declared because `z.object` strips what it is not told.
+	unreadable_by_orgs: z.number().int().optional(),
 });
 export type MessageRead = z.infer<typeof MessageReadSchema>;
 
@@ -657,6 +669,11 @@ export const GroupReadSchema = z.object({
 	// every consumer a field whose contents depend on which client filled it.
 	// The render rule lives on `AgentHandleMap` in `resources/agent-handles.ts`.
 	member_agent_ids: z.array(z.string().uuid()).default([]),
+	// Whether our org's posts here are refused, and the members behind it. Loose
+	// `string`: a refusal a newer server adds must not throw the whole page away.
+	// Absent means this deployment does not report it, never "allowed".
+	posting_refused: z.string().nullable().optional(),
+	refused_members: z.array(z.string().uuid()).nullable().optional(),
 });
 export type GroupRead = z.infer<typeof GroupReadSchema>;
 

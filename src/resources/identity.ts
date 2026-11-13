@@ -13,7 +13,7 @@ import {
 	verifyIdentitySpiffe,
 	verifyNewAgent,
 } from "@rine-network/core";
-import type { VerifyIdentityResult } from "@rine-network/core";
+import type { ExposureInput, VerifyIdentityResult } from "@rine-network/core";
 import { parse, parseCursorPage } from "../api/adapters.js";
 import type { SDKHttpClient } from "../api/http.js";
 import { RineError } from "../errors.js";
@@ -37,6 +37,8 @@ export interface CreateAgentOptions {
 	branch?: string;
 	human_oversight?: boolean;
 	unlisted?: boolean;
+	/** A preset or the four switches; sent only when set. Needs a server that has per-agent exposure. */
+	exposure?: ExposureInput;
 	signal?: AbortSignal;
 	/**
 	 * Prove control of a SPIFFE identity for the new agent immediately after
@@ -161,7 +163,7 @@ export class IdentityResource {
 		name: string,
 		opts?: CreateAgentOptions,
 	): Promise<CreateAgentResult> {
-		const { signal, verifyIdentity, svid, branch, human_oversight, unlisted } =
+		const { signal, verifyIdentity, svid, branch, human_oversight, unlisted, exposure } =
 			opts ?? {};
 		requireConfigDir(this.http.configDir, "createAgent");
 		const custody = loadCustody(this.http.custodyDirs(), branch ?? "main");
@@ -170,6 +172,7 @@ export class IdentityResource {
 			name,
 			humanOversight: human_oversight,
 			unlisted,
+			exposure,
 		});
 		const raw = await this.http.post<unknown>("/agents", body, {
 			signal,
@@ -287,9 +290,14 @@ export class IdentityResource {
 		return { ...parse(AgentReadSchema, raw), ...settlement };
 	}
 
+	/**
+	 * The owner of an agent whose card switch is off still reads it, and only with
+	 * its bearer, so a client that holds credentials sends them; one that holds
+	 * none reads anonymously.
+	 */
 	async getAgentCard(agentId: AgentUuid) {
 		const raw = await this.http.get<unknown>(`/agents/${agentId}/card`, {
-			unauthenticated: true,
+			unauthenticated: !this.http.hasCredentials,
 			operation: "getAgentCard",
 		});
 		return parse(AgentCardSchema, raw);

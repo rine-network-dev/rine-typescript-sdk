@@ -1,12 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	PrincipalRevokedError,
+	RevokedScope,
+	isPrincipalRevokedError,
+} from "@rine-network/core";
 import type { SDKHttpClient } from "../api/http.js";
 
 // Make the reconnect backoff zero-latency so tests run in real time without
 // fake timers. Must be declared before the SUT import so the mock is applied
 // when `streams.ts` resolves the `../utils/sleep.js` dependency.
-vi.mock("../utils/sleep.js", () => ({
-	sleepWithSignal: () => Promise.resolve(),
-}));
+const sleeps = vi.hoisted(() => vi.fn((_ms: number) => Promise.resolve()));
+vi.mock("../utils/sleep.js", () => ({ sleepWithSignal: sleeps }));
 
 // SUT imported after the mock is registered.
 const { StreamsResource } = await import("./streams.js");
@@ -348,9 +352,12 @@ describe("StreamsResource", () => {
 			() => sseResponse("event: message\ndata: one\nid: abc\n\n"),
 		]);
 
-		for await (const _ of new StreamsResource(http).stream(opts)) {
-			// drain
-		}
+		const ac = new AbortController();
+		await collectUntil(
+			new StreamsResource(http).stream({ ...opts, signal: ac.signal }),
+			(evs) => evs.some((e) => e.type === "message"),
+			ac,
+		);
 
 		expect(calls[0]?.headers?.["X-Rine-Peek"]).toBe(expected);
 	});
@@ -365,10 +372,145 @@ describe("StreamsResource", () => {
 			() => sseResponse("event: message\ndata: two\nid: xyz\n\n"),
 		]);
 
-		for await (const _ of new StreamsResource(http).stream()) {
-			// drain
-		}
+		const ac = new AbortController();
+		await collectUntil(
+			new StreamsResource(http).stream({ signal: ac.signal }),
+			(evs) => evs.filter((e) => e.type === "message").length === 2,
+			ac,
+		);
 
 		expect(calls.map((c) => c.headers?.["X-Rine-Peek"])).toEqual(["1", "1"]);
+	});
+});
+
+// A hold on the agent: the server closes the open stream without a frame, the
+// agent's pre-hold token dies, and a reconnect meets 403 (or a 400 on the token
+// mint) until the hold is lifted.
+describe("StreamsResource under a hold on the agent", () => {
+	const heldRefusal = () =>
+		new Response(
+			JSON.stringify({ error: "agent_suspended", detail: "agent suspended" }),
+			{ status: 403, statusText: "Forbidden" },
+		);
+
+	it("reconnects with Last-Event-ID once the hold is lifted, with the retry delay doubling to its 30 s cap", async () => {
+		const refusals = Array.from({ length: 8 }, () => heldRefusal);
+		sleeps.mockClear();
+		const { http, calls } = makeHttpStub([
+			...refusals,
+			() => sseResponse("event: message\ndata: after-lift\nid: m2\n\n"),
+		]);
+
+		const streams = new StreamsResource(http);
+		const ac = new AbortController();
+		const events = await collectUntil(
+			streams.stream({ signal: ac.signal, lastEventId: "m1" }),
+			(evs) => evs.some((e) => e.type === "message"),
+			ac,
+		);
+
+		const delays = events
+			.filter((e) => e.type === "heartbeat")
+			.map((e) => Number(/reconnecting in (\d+)s/.exec(e.data)?.[1]));
+		expect(delays).toEqual([2, 4, 8, 16, 30, 30, 30, 30]);
+		// the stream asked to wait that long, not just reported it
+		expect(sleeps.mock.calls.map(([ms]) => ms)).toEqual(delays.map((d) => d * 1000));
+		expect(calls).toHaveLength(9);
+		expect(calls.every((c) => c.headers?.["Last-Event-ID"] === "m1")).toBe(true);
+		expect(events.at(-1)).toMatchObject({ type: "message", data: "after-lift" });
+	});
+
+	it("keeps retrying when the token mint is refused with the hold's 400", async () => {
+		const { http } = makeHttpStub([
+			() => {
+				throw new Error("token mint refused: 400 unauthorized_client agent_suspended");
+			},
+			() => sseResponse("event: message\ndata: back\nid: a\n\n"),
+		]);
+
+		const streams = new StreamsResource(http);
+		const ac = new AbortController();
+		const events = await collectUntil(
+			streams.stream({ signal: ac.signal }),
+			(evs) => evs.some((e) => e.type === "message"),
+			ac,
+		);
+
+		expect(events.map((e) => e.type)).toEqual(["heartbeat", "message"]);
+	});
+
+	it("reconnects with Last-Event-ID after the server closes an open stream at the suspend, then rides out the hold and the lift", async () => {
+		sleeps.mockClear();
+		const { http, calls } = makeHttpStub([
+			() => sseResponse("event: message\ndata: before\nid: m1\n\n"),
+			heldRefusal,
+			heldRefusal,
+			() => sseResponse("event: message\ndata: after-lift\nid: m2\n\n"),
+		]);
+
+		const streams = new StreamsResource(http);
+		const ac = new AbortController();
+		const events = await collectUntil(
+			streams.stream({ signal: ac.signal }),
+			(evs) => evs.some((e) => e.data === "after-lift"),
+			ac,
+		);
+
+		expect(events.map((e) => e.type)).toEqual([
+			"message",
+			"disconnect",
+			"heartbeat",
+			"heartbeat",
+			"message",
+		]);
+		expect(calls).toHaveLength(4);
+		expect(calls.map((c) => c.headers?.["Last-Event-ID"])).toEqual([
+			undefined,
+			"m1",
+			"m1",
+			"m1",
+		]);
+		// one second after the clean end, then the error backoff 2 s, 4 s
+		expect(sleeps.mock.calls.map(([ms]) => ms)).toEqual([1000, 2000, 4000]);
+	});
+
+	it("keeps pausing a second between connections that the server closes at once", async () => {
+		sleeps.mockClear();
+		const { http, calls } = makeHttpStub(
+			Array.from({ length: 6 }, () => () => sseResponse("")),
+		);
+
+		const streams = new StreamsResource(http);
+		const ac = new AbortController();
+		await collectUntil(
+			streams.stream({ signal: ac.signal }),
+			(evs) => evs.filter((e) => e.type === "disconnect").length === 6,
+			ac,
+		);
+
+		expect(calls).toHaveLength(6);
+		expect(sleeps.mock.calls.map(([ms]) => ms)).toEqual([1000, 1000, 1000, 1000, 1000]);
+	});
+
+	it("ends with the revoked-principal error, and asks no more, when the reconnect finds the agent revoked", async () => {
+		const { http, calls } = makeHttpStub([
+			() => sseResponse("event: message\ndata: before\nid: m1\n\n"),
+			() => {
+				throw new PrincipalRevokedError(RevokedScope.Agent, "Agent is revoked");
+			},
+			() => sseResponse("event: message\ndata: never-asked-for\nid: m2\n\n"),
+		]);
+
+		const streams = new StreamsResource(http);
+		const types: string[] = [];
+		const ending = (async () => {
+			for await (const ev of streams.stream({ signal: new AbortController().signal })) {
+				types.push(ev.type);
+			}
+		})();
+
+		await expect(ending).rejects.toSatisfy(isPrincipalRevokedError);
+		expect(types).toEqual(["message", "disconnect"]);
+		expect(calls).toHaveLength(2);
 	});
 });

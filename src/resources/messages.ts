@@ -14,6 +14,7 @@ import {
 	ACTOR_SURFACES,
 	MlsInitInFlightError,
 	REF_CLASS,
+	assertGroupPostable,
 	assertNoMlsDowngrade,
 	classifyReference,
 	encryptGroupMessage,
@@ -790,6 +791,8 @@ export class MessagesResource {
 			// reaching the sender-key branch has already leaked the key
 			// (`assertNoMlsDowngrade`). No fallback and no sender-key retry.
 			assertNoMlsDowngrade(this.http.configDir, senderId, group.id, mlsOnly);
+			// Our org's rule refuses posts here: stop before a key leaves the machine.
+			assertGroupPostable(group);
 
 			if (mlsOnly) {
 				// The row's handle, not the caller's spelling — the same argument the

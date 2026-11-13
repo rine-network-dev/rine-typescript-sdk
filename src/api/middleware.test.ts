@@ -455,6 +455,23 @@ describe("SDKHttpClient middleware integration", () => {
 		expect(middlewareRuns).toBe(0);
 	});
 
+	it("openStream drops a token the server refuses with 401 and mints one fresh, once", async () => {
+		// A hold's cutoff kills the cached token; the stream must not keep sending it.
+		const { getOrRefreshToken } = await import("@rine-network/core");
+		const mint = vi.mocked(getOrRefreshToken);
+		mint.mockClear();
+		fetchStub
+			.mockResolvedValueOnce(new Response("{}", { status: 401 }))
+			.mockResolvedValueOnce(new Response("{}", { status: 401 }));
+		const http = new SDKHttpClient({ apiUrl: "https://api.test" });
+		const res = await http.openStream("/agents/x/stream", {
+			signal: new AbortController().signal,
+		});
+		expect(res.status).toBe(401);
+		expect(fetchStub).toHaveBeenCalledTimes(2);
+		expect(mint.mock.calls.map((c) => c[3]?.force)).toEqual([undefined, true]);
+	});
+
 	it("getCoreHttpClient does NOT run the middleware pipeline", async () => {
 		// getCoreHttpClient returns a rine-core HttpClient for the crypto
 		// path. Calls through it must bypass SDK middleware entirely — the

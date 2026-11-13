@@ -33,6 +33,10 @@
  * last three. Their Python twins are `CryptoError`s, so a catch of `RineError`
  * around a group send, `whoami()` or an agent create holds on both stacks.
  *
+ * `GroupPostingRefusedError` is the sixth: a send into a group our org's rule
+ * refuses is stopped here before anything is sealed, where it used to be the
+ * server's 403, so a catch of `RineError` around `messages.send()` holds either way.
+ *
  * 🔴 The base-only widening is what keeps this safe. `isRineErrorInstance`
  * answers true for a core-minted refusal when the class asked about IS
  * `RineError`, and never when it is a subclass — otherwise
@@ -44,6 +48,7 @@ import {
 	isAgentIdMismatchError,
 	isEscrowGapError,
 	isGroupIdentityMismatchError,
+	isGroupPostingRefusedError,
 	isMlsDowngradeError,
 	isMlsInitInFlightError,
 	isOrgMismatchError,
@@ -55,6 +60,7 @@ function isCoreMintedRefusal(value: unknown): boolean {
 	return (
 		isMlsInitInFlightError(value) ||
 		isMlsDowngradeError(value) ||
+		isGroupPostingRefusedError(value) ||
 		isGroupIdentityMismatchError(value) ||
 		isEscrowGapError(value) ||
 		isOrgMismatchError(value) ||

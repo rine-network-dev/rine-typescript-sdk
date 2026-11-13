@@ -578,6 +578,12 @@ export class AsyncRineClient implements AsyncDisposable {
 	 * `break`s out of the `for await` loop (triggering the generator's
 	 * `return()`, which closes the underlying SSE connection).
 	 *
+	 * The iterator outlives the server closing the stream (a suspend, a
+	 * restart, the heartbeat limit): it reconnects after a short pause, and
+	 * backs off while the server refuses it, so a suspended agent resumes by
+	 * itself once it is resumed. Only a revoked agent ends it, by throwing the
+	 * revoked-principal error (`isPrincipalRevokedError`).
+	 *
 	 * Delivery: the stream runs in peek mode, so the server marks nothing
 	 * delivered as it sends. The iterator marks a message delivered, in
 	 * batches, once it has settled: it opened, it was never ciphertext, or its

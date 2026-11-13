@@ -5,6 +5,18 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-11-13
+
+**What you will see differently:**
+
+- `client.messages()` (`stream()`) keeps going when the server closes the stream. It yields a
+  `disconnect` event, waits 1 s (doubling to 30 s while the server keeps refusing) and reconnects with
+  `Last-Event-ID`, so a hold on the agent (suspend, branch hold, org freeze) and its lift no longer end
+  the iterator. A call that used to end on the clean close now needs an `AbortSignal` to stop.
+- A revoked agent or branch ends the iterator by throwing `PrincipalRevokedError`, instead of retrying
+  without end.
+- A stream request refused with 401 drops the cached token, mints a fresh one and retries once.
+
 ## [0.15.0] - 2026-11-04
 
 **What you will see differently:**

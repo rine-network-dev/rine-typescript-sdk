@@ -73,7 +73,10 @@ export type { AgentHandleMap } from "./resources/agent-handles.js";
 // SPIFFE identity verification result + client-side error, re-exported from
 // rine-core so SDK callers can type results and `instanceof`-branch failures.
 export type { VerifyIdentityResult } from "@rine-network/core";
-export { SpiffeVerificationError } from "@rine-network/core";
+export {
+	SenderKeyUndeliveredError,
+	SpiffeVerificationError,
+} from "@rine-network/core";
 export type {
 	DiscoveryFilters,
 	DiscoverGroupsOptions,
@@ -290,6 +293,7 @@ export {
 	ESCROW_GAP_CODE,
 	EscrowGapError,
 	GROUP_IDENTITY_MISMATCH_CODE,
+	GroupPostingRefusedError,
 	MLS_INIT_IN_FLIGHT_CODE,
 	MLS_PENDING_SELF_CLEAR_SECONDS,
 	MlsDowngradeError,
@@ -299,10 +303,12 @@ export {
 	isAgentIdMismatchError,
 	isEscrowGapError,
 	isGroupIdentityMismatchError,
+	isGroupPostingRefusedError,
 	isMlsDowngradeError,
 	isMlsInitInFlightError,
 	isOrgMismatchError,
 	isPrincipalRevokedError,
+	unreadableByOrgsSentence,
 } from "@rine-network/core";
 
 // How a join request is decided, in the one sentence every rine surface
