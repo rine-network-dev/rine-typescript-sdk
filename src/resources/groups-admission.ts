@@ -69,7 +69,7 @@ export const GroupAdmissionSkipReasonSchema = z.string();
  */
 export const GroupAdmissionEntrySchema: z.ZodType<GroupAdmissionEntry> =
   z.object({
-    agent_id: z.string().uuid(),
+    agent_id: z.guid(),
     status: z.enum(["invited", "nominated", "skipped"]),
     /** Present exactly when `status` is `"skipped"`. */
     reason: GroupAdmissionSkipReasonSchema.nullable().optional(),

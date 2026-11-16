@@ -5,6 +5,19 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-11-16
+
+The SDK depends on zod 4 (`^4.6.7`). Zod 3 has no fix for GHSA-mrhx-c7xc-m3w5, a memory exhaustion when
+validating oversized constrained collections.
+
+**What you will see differently:**
+
+- The `z` the package re-exports is zod 4. A schema you build with it for `parsePlaintext` or `parseDecrypted`
+  follows zod 4 rules, and a parse error carries zod 4 wording (`Invalid input: expected string, received
+  undefined` where zod 3 said `Required`).
+- A response id is checked as an 8-4-4-4-12 hex id, as before. It is not narrowed to RFC 9562 versions 1 to 8,
+  so an id the server issues is never refused for its variant bits.
+
 ## [0.17.0] - 2026-11-15
 
 - The client option `onMlsUnseated` takes a callback that receives the group id and the admission result when an

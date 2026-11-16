@@ -311,14 +311,14 @@ export const RESERVED_MESSAGE_TYPES: ReadonlySet<MessageTypeString> =
 // --- Org ---
 
 export const OrgReadSchema = z.object({
-	id: z.string().uuid(),
+	id: z.guid(),
 	name: z.string(),
 	slug: z.string().nullable().optional(),
 	contact_email: z.string().nullable().optional(),
 	country_code: z.string().nullable().optional(),
 	trust_tier: z.number().int().default(0),
 	agent_count: z.number().int().default(0),
-	created_at: z.string().datetime(),
+	created_at: z.iso.datetime(),
 });
 export type OrgRead = z.infer<typeof OrgReadSchema>;
 
@@ -332,14 +332,14 @@ const ExposureSetSchema = z.object({
 });
 
 export const AgentReadSchema = z.object({
-	id: z.string().uuid(),
+	id: z.guid(),
 	name: z.string(),
 	handle: z.string(),
 	human_oversight: z.boolean().default(true),
 	incoming_policy: z.string().default("accept_all"),
 	outgoing_policy: z.string().default("send_all"),
-	created_at: z.string().datetime(),
-	revoked_at: z.string().datetime().nullable().optional(),
+	created_at: z.iso.datetime(),
+	revoked_at: z.iso.datetime().nullable().optional(),
 	unlisted: z.boolean().optional(),
 	exposure: ExposureSetSchema.nullish(),
 	preset: z.string().nullish(),
@@ -362,9 +362,9 @@ export type WhoAmIPrincipalKind =
 
 /** Who the bearer token speaks for; `branch` and `agent_id` are set where the kind has them. */
 export const WhoAmIPrincipalSchema = z.object({
-	kind: z.nativeEnum(WhoAmIPrincipalKind),
+	kind: z.enum(WhoAmIPrincipalKind),
 	branch: z.string().nullable().default(null),
-	agent_id: z.string().uuid().nullable().default(null),
+	agent_id: z.guid().nullable().default(null),
 });
 export type WhoAmIPrincipal = z.infer<typeof WhoAmIPrincipalSchema>;
 
@@ -381,10 +381,10 @@ export type WhoAmI = z.infer<typeof WhoAmISchema>;
 // --- Messages ---
 
 export const MessageReadSchema = z.object({
-	id: z.string().uuid(),
-	conversation_id: z.string().uuid(),
-	from_agent_id: z.string().uuid().nullable().optional(),
-	to_agent_id: z.string().uuid().nullable().optional(),
+	id: z.guid(),
+	conversation_id: z.guid(),
+	from_agent_id: z.guid().nullable().optional(),
+	to_agent_id: z.guid().nullable().optional(),
 	sender_handle: z.string().nullable().optional(),
 	recipient_handle: z.string().nullable().optional(),
 	type: z.string(),
@@ -394,12 +394,12 @@ export const MessageReadSchema = z.object({
 	encryption_version: z.string(),
 	sender_signing_kid: z.string().nullable().optional(),
 	content_type: z.string().nullable().optional(),
-	metadata: z.record(z.unknown()).default({}),
-	created_at: z.string().datetime(),
-	delivered_at: z.string().datetime().nullable().optional(),
-	read_at: z.string().datetime().nullable().optional(),
+	metadata: z.record(z.string(), z.unknown()).default({}),
+	created_at: z.iso.datetime(),
+	delivered_at: z.iso.datetime().nullable().optional(),
+	read_at: z.iso.datetime().nullable().optional(),
 	status: z.enum(["new", "delivered", "read"]).optional(),
-	group_id: z.string().uuid().nullable().optional(),
+	group_id: z.guid().nullable().optional(),
 	group_handle: z.string().nullable().optional(),
 	// On a group post's own response only: how many member organisations may not
 	// be able to read it. Declared because `z.object` strips what it is not told.
@@ -618,7 +618,7 @@ export type SendAndWaitResult<Rep = unknown> = {
 // --- Groups ---
 
 export const GroupReadSchema = z.object({
-	id: z.string().uuid(),
+	id: z.guid(),
 	name: z.string(),
 	handle: z.string(),
 	description: z.string().nullable().optional(),
@@ -627,7 +627,7 @@ export const GroupReadSchema = z.object({
 	isolated: z.boolean().default(false),
 	vote_duration_hours: z.number().int().default(72),
 	member_count: z.number().int().default(0),
-	created_at: z.string().datetime(),
+	created_at: z.iso.datetime(),
 	// MLS group fields. `mls_group_id` is an opaque "MLS-active" latch:
 	// non-null ⇒ the group uses MLS. It is never used as a storage key — the
 	// rine group UUID (`id`) is the only MLS state key.
@@ -647,7 +647,7 @@ export const GroupReadSchema = z.object({
 	// makes a server that predates the field parse to that same `null` instead
 	// of throwing the whole page away, which is why callers always read
 	// `string | null` and never `undefined`.
-	conversation_id: z.string().uuid().nullable().default(null),
+	conversation_id: z.guid().nullable().default(null),
 	// Which of the CALLER'S OWN agents hold a seat in this group.
 	//
 	// `GET /groups` is key-scoped: an org key lists every group any agent of the org is
@@ -668,21 +668,21 @@ export const GroupReadSchema = z.object({
 	// accept a handle would make a rendering choice into a parse rule and hand
 	// every consumer a field whose contents depend on which client filled it.
 	// The render rule lives on `AgentHandleMap` in `resources/agent-handles.ts`.
-	member_agent_ids: z.array(z.string().uuid()).default([]),
+	member_agent_ids: z.array(z.guid()).default([]),
 	// Whether our org's posts here are refused, and the members behind it. Loose
 	// `string`: a refusal a newer server adds must not throw the whole page away.
 	// Absent means this deployment does not report it, never "allowed".
 	posting_refused: z.string().nullable().optional(),
-	refused_members: z.array(z.string().uuid()).nullable().optional(),
+	refused_members: z.array(z.guid()).nullable().optional(),
 });
 export type GroupRead = z.infer<typeof GroupReadSchema>;
 
 export const GroupMemberSchema = z.object({
-	id: z.string().uuid().nullable().optional(),
-	group_id: z.string().uuid(),
-	agent_id: z.string().uuid(),
+	id: z.guid().nullable().optional(),
+	group_id: z.guid(),
+	agent_id: z.guid(),
 	role: z.string().default("member"),
-	joined_at: z.string().datetime(),
+	joined_at: z.iso.datetime(),
 	agent_handle: z.string().nullable().optional(),
 	// Whether this roster row is one of the caller's own org's agents.
 	//
@@ -695,15 +695,15 @@ export const GroupMemberSchema = z.object({
 export type GroupMember = z.infer<typeof GroupMemberSchema>;
 
 const JoinRequestReadFields = z.object({
-	id: z.string().uuid(),
-	group_id: z.string().uuid(),
-	agent_id: z.string().uuid(),
-	invited_by: z.string().uuid().nullable().optional(),
+	id: z.guid(),
+	group_id: z.guid(),
+	agent_id: z.guid(),
+	invited_by: z.guid().nullable().optional(),
 	message: z.string().nullable().optional(),
 	status: z.string(),
-	expires_at: z.string().datetime().nullable().optional(),
-	created_at: z.string().datetime(),
-	resolved_at: z.string().datetime().nullable().optional(),
+	expires_at: z.iso.datetime().nullable().optional(),
+	created_at: z.iso.datetime(),
+	resolved_at: z.iso.datetime().nullable().optional(),
 	// How many members the group had when this request was filed. Reporting
 	// only: the bar is computed against `electorate_size`, the ones who are
 	// still in the group. It is what makes a shrunk group explainable — nine
@@ -794,12 +794,12 @@ export type JoinResult = z.infer<typeof JoinResultSchema>;
 
 export const InviteResultSchema = z.object({
 	status: z.string(),
-	request_id: z.string().uuid().nullable().optional(),
+	request_id: z.guid().nullable().optional(),
 });
 export type InviteResult = z.infer<typeof InviteResultSchema>;
 
 export const GroupSummarySchema = z.object({
-	id: z.string().uuid(),
+	id: z.guid(),
 	name: z.string(),
 	handle: z.string(),
 	description: z.string().nullable().optional(),
@@ -816,7 +816,7 @@ export const GroupSummarySchema = z.object({
 export type GroupSummary = z.infer<typeof GroupSummarySchema>;
 
 export const VoteResponseSchema = z.object({
-	request_id: z.string().uuid(),
+	request_id: z.guid(),
 	your_vote: z.string(),
 	status: z.string(),
 	// Whether this vote also minted the applicant's ratchet-tree leaf and
@@ -841,7 +841,7 @@ export type VoteResponse = z.infer<typeof VoteResponseSchema>;
 // --- Discovery ---
 
 export const AgentSummarySchema = z.object({
-	id: z.string().uuid(),
+	id: z.guid(),
 	name: z.string(),
 	handle: z.string(),
 	description: z.string().nullable().optional(),
@@ -851,39 +851,39 @@ export const AgentSummarySchema = z.object({
 export type AgentSummary = z.infer<typeof AgentSummarySchema>;
 
 export const AgentProfileSchema = z.object({
-	id: z.string().uuid(),
+	id: z.guid(),
 	name: z.string(),
 	handle: z.string(),
 	description: z.string().nullable().optional(),
 	category: z.string().nullable().optional(),
 	verified: z.boolean().default(false),
 	human_oversight: z.boolean().default(true),
-	created_at: z.string().datetime().nullable().optional(),
+	created_at: z.iso.datetime().nullable().optional(),
 });
 export type AgentProfile = z.infer<typeof AgentProfileSchema>;
 
 export const AgentCardSchema = z.object({
-	id: z.string().uuid(),
-	agent_id: z.string().uuid(),
+	id: z.guid(),
+	agent_id: z.guid(),
 	name: z.string(),
 	description: z.string().nullable().optional(),
 	version: z.string().nullable().optional(),
 	is_public: z.boolean().default(false),
-	skills: z.array(z.record(z.unknown())).optional().default([]),
-	rine: z.record(z.unknown()).optional().default({}),
-	created_at: z.string().datetime(),
-	updated_at: z.string().datetime().nullable().optional(),
+	skills: z.array(z.record(z.string(), z.unknown())).optional().default([]),
+	rine: z.record(z.string(), z.unknown()).optional().default({}),
+	created_at: z.iso.datetime(),
+	updated_at: z.iso.datetime().nullable().optional(),
 });
 export type AgentCardRead = z.infer<typeof AgentCardSchema>;
 
 // --- Webhooks ---
 
 export const WebhookReadSchema = z.object({
-	id: z.string().uuid(),
-	agent_id: z.string().uuid(),
+	id: z.guid(),
+	agent_id: z.guid(),
 	url: z.string(),
 	active: z.boolean().default(true),
-	created_at: z.string().datetime(),
+	created_at: z.iso.datetime(),
 });
 export type WebhookRead = z.infer<typeof WebhookReadSchema>;
 
@@ -893,16 +893,16 @@ export const WebhookCreatedSchema = WebhookReadSchema.extend({
 export type WebhookCreated = z.infer<typeof WebhookCreatedSchema>;
 
 export const WebhookDeliveryReadSchema = z.object({
-	id: z.string().uuid(),
-	webhook_id: z.string().uuid(),
-	message_id: z.string().uuid(),
+	id: z.guid(),
+	webhook_id: z.guid(),
+	message_id: z.guid(),
 	status: z.string(),
 	attempts: z.number().int().default(0),
 	max_attempts: z.number().int().default(5),
 	last_error: z.string().nullable().optional(),
-	created_at: z.string().datetime(),
-	delivered_at: z.string().datetime().nullable().optional(),
-	next_attempt_at: z.string().datetime().nullable().optional(),
+	created_at: z.iso.datetime(),
+	delivered_at: z.iso.datetime().nullable().optional(),
+	next_attempt_at: z.iso.datetime().nullable().optional(),
 });
 export type WebhookDeliveryRead = z.infer<typeof WebhookDeliveryReadSchema>;
 
@@ -919,16 +919,16 @@ export type WebhookJobSummary = z.infer<typeof WebhookJobSummarySchema>;
 // --- Quotas ---
 
 export const QuotaEntrySchema = z.object({
-	limit: z.number().int().nullable(),
+	limit: z.number().nullable(),
 	// `used` is omitted for per-resource quotas (e.g. max_webhooks_per_agent)
 	// where a single org-level aggregate doesn't make sense.
-	used: z.number().int().nullable().optional(),
+	used: z.number().nullable().optional(),
 });
 export type QuotaEntry = z.infer<typeof QuotaEntrySchema>;
 
 export const OrgQuotasSchema = z.object({
 	tier: z.number().int(),
-	quotas: z.record(QuotaEntrySchema),
+	quotas: z.record(z.string(), QuotaEntrySchema),
 });
 export type OrgQuotas = z.infer<typeof OrgQuotasSchema>;
 
@@ -955,8 +955,8 @@ export type RineEvent = z.infer<typeof RineEventSchema>;
 // --- Erasure (GDPR) ---
 
 export const ErasureResultSchema = z.object({
-	org_id: z.string().uuid(),
-	erased_at: z.string().datetime(),
+	org_id: z.guid(),
+	erased_at: z.iso.datetime(),
 	messages_deleted: z.number().int(),
 	agents_deleted: z.number().int(),
 	conversations_deleted: z.number().int(),
