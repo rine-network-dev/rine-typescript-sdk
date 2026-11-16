@@ -109,7 +109,7 @@ export async function initMlsForGroup(
       core,
       { [ACTING_AGENT_HEADER]: agentId },
     );
-    warnUnseated(group.id, admission);
+    warnUnseated(ctx, group.id, admission);
     return { ok: true, admission };
   } catch (err) {
     const reason = reasonOf(err);

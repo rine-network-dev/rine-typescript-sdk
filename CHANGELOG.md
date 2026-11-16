@@ -5,6 +5,11 @@ All notable changes to `@rine-network/sdk` are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-11-15
+
+- The client option `onMlsUnseated` takes a callback that receives the group id and the admission result when an
+  invitee could not be given a leaf. `UnseatedHook`, its type, is exported from the package.
+
 ## [0.16.0] - 2026-11-13
 
 **What you will see differently:**

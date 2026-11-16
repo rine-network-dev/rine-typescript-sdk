@@ -29,6 +29,7 @@ import {
 	AgentHandleCache,
 } from "./resources/agent-handles.js";
 import { GroupsResource } from "./resources/groups.js";
+import type { UnseatedHook } from "./resources/groups-mls-context.js";
 import {
 	type AgentCardInput,
 	type CreateAgentOptions,
@@ -105,6 +106,14 @@ export interface RineClientOptions {
 	 * `client.messages`) or crypto-path HTTP calls.
 	 */
 	middleware?: readonly RineMiddleware[];
+	/**
+	 * Called, instead of the `console.warn` it replaces, when an MLS admission
+	 * leaves agents without a leaf: `groups.create` with `members` and an invite
+	 * both report it. A host that seats those agents itself (an invitee that
+	 * joins in the next step takes its own leaf) shows the notice only if someone
+	 * is still unseated.
+	 */
+	onMlsUnseated?: UnseatedHook;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +287,7 @@ let __includeReservedWarned = false;
 export class AsyncRineClient implements AsyncDisposable {
 	private readonly http: SDKHttpClient;
 	private readonly _signal?: AbortSignal;
+	private readonly onMlsUnseated?: UnseatedHook;
 
 	// Sub-resources. The `messages` slot is reserved for the public iterator
 	// method on the public surface; the underlying resource is stashed
@@ -310,12 +320,13 @@ export class AsyncRineClient implements AsyncDisposable {
 			middleware: opts.middleware,
 		});
 		this._signal = opts.signal;
+		this.onMlsUnseated = opts.onMlsUnseated;
 
 		// Initialise sub-resources
 		this.messagingResource = new MessagesResource(this.http);
 		this.streams = new StreamsResource(this.http);
 		this.polling = new PollingResource(this.http);
-		this.groups = new GroupsResource(this.http, this.messagingResource);
+		this.groups = new GroupsResource(this.http, this.messagingResource, opts.onMlsUnseated);
 		this.webhooks = new WebhooksResource(this.http);
 		this.discovery = new DiscoveryResource(this.http);
 		this.identity = new IdentityResource(this.http);
@@ -1062,6 +1073,7 @@ export class AsyncRineClient implements AsyncDisposable {
 			maxRetries: opts.maxRetries ?? this.http.maxRetries,
 			middleware: this.http.middleware,
 			signal: opts.signal ?? this._signal,
+			onMlsUnseated: this.onMlsUnseated,
 		});
 		// The agent list is Key-scoped and this derived client shares the
 		// credentials that scope it, so it shares the fetch too. Without this a

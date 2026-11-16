@@ -112,6 +112,8 @@ export type {
 	OutstandingFilter,
 	SenderKeyRecoveryResult,
 } from "./resources/groups.js";
+// The type of the `onMlsUnseated` client option, so a caller can type the hook it passes.
+export type { UnseatedHook } from "./resources/groups-mls-context.js";
 // The per-agent halves of an admission result. Without them a caller can hold
 // `GroupCreateResult.mlsAdmission` and still not name what it iterates, which
 // is the gap that produced two re-declarations of the report shape.

@@ -27,11 +27,23 @@ import type { MessagesResource } from "./messages.js";
 export interface GroupMlsContext {
   http: SDKHttpClient;
   messages: MessagesResource;
+  /** Replaces the console notice {@link warnUnseated} would print. */
+  onUnseated?: UnseatedHook;
   getGroup(
     groupId: GroupUuid,
     signal: AbortSignal | undefined,
   ): Promise<GroupRead>;
 }
+
+/**
+ * A host's own answer to agents an admission left without a leaf, taking the
+ * group and the whole admission result, so it decides which outcomes matter
+ * rather than parsing the notice's text.
+ */
+export type UnseatedHook = (
+  groupId: string,
+  result: MlsAdmissionResult,
+) => void;
 
 /**
  * The operator-facing text of a failure a hook swallowed. Hooks report what
@@ -57,9 +69,11 @@ export function reasonOf(err: unknown): string {
  * it.
  */
 export function warnUnseated(
+  ctx: Pick<GroupMlsContext, "onUnseated">,
   groupId: string,
   result: MlsAdmissionResult,
 ): void {
+  if (ctx.onUnseated) return ctx.onUnseated(groupId, result);
   const unseated = result.outcomes.filter(
     (outcome) =>
       outcome.status === "skipped" && outcome.reason !== "already_in_group",

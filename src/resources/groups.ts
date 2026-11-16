@@ -55,7 +55,7 @@ import {
 	resumeMlsAdmission,
 } from "./groups-mls.js";
 import type { GroupMlsContext, MlsAdmissionResult } from "./groups-mls.js";
-import { reasonOf } from "./groups-mls-context.js";
+import { type UnseatedHook, reasonOf } from "./groups-mls-context.js";
 import {
 	type GroupSelector,
 	type ResolvedGroup,
@@ -160,6 +160,8 @@ export class GroupsResource {
 		// the resource can be unit-tested in isolation; when absent the MLS
 		// lifecycle hooks are skipped (the sender-key path still works).
 		private readonly messages?: MessagesResource,
+		// Replaces the console notice for agents an admission left without a leaf.
+		private readonly onUnseated?: UnseatedHook,
 	) {}
 
 	async list() {
@@ -330,6 +332,7 @@ export class GroupsResource {
 		return {
 			http: this.http,
 			messages: this.messages,
+			onUnseated: this.onUnseated,
 			getGroup: (groupId, signal) =>
 				known !== undefined && sameGroupId(known.id, groupId)
 					? Promise.resolve(known)

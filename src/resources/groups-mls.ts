@@ -173,7 +173,7 @@ export async function addMembersToMls(
       core,
       { [ACTING_AGENT_HEADER]: adminId },
     );
-    warnUnseated(group.id, result);
+    warnUnseated(ctx, group.id, result);
     return result;
   } catch (err) {
     console.warn(
